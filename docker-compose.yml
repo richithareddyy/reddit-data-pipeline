@@ -1,0 +1,70 @@
+name: reddit-pipeline
+
+x-db-env: &db-env
+  POSTGRES_USER: ${POSTGRES_USER:-reddit}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-reddit}
+  POSTGRES_DB: ${POSTGRES_DB:-reddit}
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      <<: *db-env
+    # Tuned for bulk loading on a developer machine. Durability is preserved
+    # (fsync stays on); wal_level=minimal lets COPY and CREATE INDEX skip most WAL.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - work_mem=64MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - max_wal_size=8GB
+      - -c
+      - checkpoint_timeout=30min
+      - -c
+      - wal_level=minimal
+      - -c
+      - max_wal_senders=0
+      - -c
+      - wal_compression=on
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - max_parallel_maintenance_workers=4
+    shm_size: 1g
+    # After a bulk load the shutdown checkpoint can flush gigabytes of dirty buffers;
+    # Docker's default 10s would kill PostgreSQL mid-checkpoint and force crash recovery.
+    stop_grace_period: 2m
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+      - ./sql:/sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  pipeline:
+    build: .
+    environment:
+      <<: *db-env
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      TEST_DATABASE_URL: postgresql://${POSTGRES_USER:-reddit}:${POSTGRES_PASSWORD:-reddit}@postgres:5432/reddit_test
+    volumes:
+      - ./data:/data
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
