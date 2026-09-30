@@ -1,0 +1,22 @@
+[project]
+name = "reddit-data-pipeline"
+version = "1.0.0"
+description = "Validated bulk ingestion of Reddit dump data into PostgreSQL"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "psycopg[binary]>=3.2",
+    "orjson>=3.10",
+    "zstandard>=0.23",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+markers = [
+    "integration: requires a PostgreSQL database via TEST_DATABASE_URL",
+]
