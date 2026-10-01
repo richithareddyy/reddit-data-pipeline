@@ -1,8 +1,16 @@
 # Reddit Data Pipeline
 
-A Dockerized ETL pipeline that ingests large Reddit dumps (submissions, comments, authors and communities) into PostgreSQL. Every record is validated, deduplicated and checked for referential integrity. Bulk loading uses streaming `COPY` and set-based SQL, and each run ends with automated data quality checks and a full audit trail.
+Load Reddit-format archive files into PostgreSQL with validation, deduplication, referential checks, and per-run audit records. The pipeline uses streaming `COPY` and set-based SQL to process submissions, comments, authors, and communities.
 
-The pipeline reads the newline-delimited JSON format used by the Pushshift Reddit archives (plain, `.gz` or `.zst`). A built-in generator produces realistic datasets of the same shape, up to ~18.9M records, with a known set of injected defects so every run can be verified exactly.
+**Python · PostgreSQL · SQL · Docker**
+
+## At a glance
+
+| Input | Processing | Output |
+| --- | --- | --- |
+| Newline-delimited JSON, plain or compressed with gzip/Zstandard | Validation, staging, deduplication, and upserts | Relational tables, rejected-record reports, and 13 data-quality checks |
+
+**Benchmark scope:** The reported 18.9-million-line benchmark uses generated data with deliberately injected defects. It demonstrates the pipeline on a reproducible test dataset; runtime depends on hardware and input characteristics.
 
 ## Contents
 
