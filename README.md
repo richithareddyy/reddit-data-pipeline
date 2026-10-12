@@ -4,6 +4,8 @@ Load Reddit-format archive files into PostgreSQL with validation, deduplication,
 
 **Python · PostgreSQL · SQL · Docker**
 
+The problem is making repeated archive loads both inspectable and safe to rerun: malformed records need an explanation, older snapshots must not overwrite newer rows, and a failed run needs a recoverable state. PostgreSQL handles the merge and integrity work; Python handles streaming input and validation.
+
 ## At a glance
 
 | Input | Processing | Output |
@@ -85,7 +87,7 @@ The CLI can also be called directly: `docker compose run --rm pipeline --help`.
 | `staging` | one per entity | Unlogged, constraint-free landing tables written by `COPY` |
 | `etl` | `pipeline_runs` | One row per run: status, mode, timing, error |
 | `etl` | `load_stats` | Per-entity counts: read, invalid, duplicates, orphaned, accepted, upserted, timing |
-| `etl` | `rejected_records` | Every rejected line with its source line number, reason and raw content |
+| `etl` | `rejected_records` | Validation/integrity rejects with source line and reason; duplicates are counted separately |
 | `etl` | `quality_results` | Observed value, threshold and pass/fail for each check |
 
 Core tables enforce primary keys, `NOT NULL`, and `CHECK` constraints on ID formats, name formats, title length, non-negative counts and enumerated values. Deleted accounts (`[deleted]`) are stored as a `NULL` author, and the author foreign keys permit this.
@@ -112,7 +114,7 @@ Foreign keys and secondary indexes are defined in [`pipeline/constraints.py`](pi
 - **Referential integrity**: submissions need an existing subreddit and author. Comments need an existing submission and author, and must belong to the same subreddit as their submission. Rows that fail are written to `etl.rejected_records` with reasons such as `orphan_submission` or `subreddit_mismatch`.
 - **Idempotent upserts**: an existing row is replaced only by a strictly newer retrieval. Re-running the same input changes nothing, and an older dump never overwrites newer data.
 
-Each rejected line is kept with its source line number and raw content, so it can be traced back to the input file.
+Validation rejects retain a sanitized excerpt of at most 4,000 characters from the input line. Integrity rejects retain the normalized staging row as JSON. Superseded duplicates contribute to counts but are not individually inserted into `etl.rejected_records`. Keep the original dumps for complete source records.
 
 ## Data quality checks
 
@@ -136,7 +138,7 @@ After loading, [`pipeline/quality.py`](pipeline/quality.py) runs these checks an
 
 ## Bulk load optimizations
 
-- **Streaming, constant memory.** Files are decompressed and parsed line by line (with `orjson` for fast JSON parsing). Valid rows go to PostgreSQL through a single `COPY ... FROM STDIN` per entity, in 50K-row chunks. Rejected lines spool to a temporary file and are copied in one batch.
+- **Streaming with bounded row batches.** Files are decompressed and parsed line by line (with `orjson` for fast JSON parsing). Valid rows go to PostgreSQL through a single `COPY ... FROM STDIN` per entity, in 50K-row chunks. Rejected lines spool to a temporary file and are copied in one batch.
 - **Unlogged staging tables.** Raw rows land in `UNLOGGED` tables with no constraints or indexes, so writing them generates no WAL and does no per-row checking.
 - **Narrow set-based merge.** One window-function pass over narrow columns (key, source line, parent references) collects only the rows that must *not* load: superseded duplicates and rows with missing parents. The upsert then anti-joins staging against that small set, so full-width records are never sorted or copied to a temp table. There are no per-row round trips.
 - **WAL-free initial insert.** In bulk mode, an empty core table is truncated inside the merge transaction. With `wal_level=minimal`, PostgreSQL can then write the new rows without WAL and sync the file once at commit.
@@ -146,7 +148,7 @@ After loading, [`pipeline/quality.py`](pipeline/quality.py) runs these checks an
 
 ## Benchmark
 
-This benchmark is a full-scale run (`make generate SCALE=full && make load`) into an empty database. Docker Desktop was limited to 10 CPUs and 8 GB of memory, on an Apple Silicon Mac with an SSD. The input was 18,897,027 lines (5.9 GB of uncompressed NDJSON) with a 1% defect rate.
+The following is a previously reported development benchmark; its raw timing log is not committed. It describes a full-scale run (`make generate SCALE=full && make load`) into an empty database. Docker Desktop was limited to 10 CPUs and 8 GB of memory, on an Apple Silicon Mac with an SSD. The input was 18,897,027 lines (5.9 GB of uncompressed NDJSON) with a 1% defect rate.
 
 | Entity | Lines read | Invalid | Duplicates | Orphaned | Loaded |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -220,8 +222,10 @@ A GitHub Actions workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml
 
 - **One run at a time.** Each run takes a PostgreSQL advisory lock before touching the shared staging tables and constraints. A second concurrent run exits with a clear message instead of corrupting the first.
 - **Crash recovery.** If a process was killed mid-run, its run is still marked `running`. The next run marks it `failed` and rebuilds any foreign keys or indexes that bulk mode had dropped.
-- **Clean failures.** If a run raises an error, its transaction is rolled back, the error is stored in `etl.pipeline_runs.error`, and the constraints are restored immediately.
+- **Failure boundaries.** Staging and merges commit separately for each entity. An error rolls back the active transaction, records the failure, and attempts to restore constraints; already committed entities remain. A quality failure also leaves loaded rows in place and marks the run `quality_failed`. This is a rerunnable pipeline, not one all-or-nothing transaction across the entire archive.
 - **Safe to re-run.** Upserts only apply strictly newer data, so re-running after a failure or re-loading an overlapping dump never duplicates or regresses rows.
+
+The supplied Compose settings favor a local bulk-load experiment (`wal_level=minimal`, no replication, and asynchronous commits). They are not a production durability or replication configuration. There is no scheduler or live Reddit API collector in this repository.
 
 ## Project structure
 
