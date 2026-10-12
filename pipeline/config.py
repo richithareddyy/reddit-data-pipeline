@@ -1,5 +1,3 @@
-"""Runtime settings, read from environment variables."""
-
 from __future__ import annotations
 
 import os
@@ -19,15 +17,10 @@ def _default_database_url() -> str:
 @dataclass(frozen=True)
 class Settings:
     database_url: str
-    # Valid rows buffered in memory before each write to the COPY stream.
-    copy_batch_rows: int = 50_000
-    # Log extraction progress every N input lines.
+    copy_batch_rows: int = 50_000  # rows buffered per write to the COPY stream
     progress_every: int = 1_000_000
-    # Maximum share of input lines that may be rejected before the run fails quality checks.
     max_reject_rate: float = 0.05
-    # Maximum share of comments whose parent comment is not present in the dataset.
     max_orphan_parent_rate: float = 0.05
-    # Session-level memory settings used for sorts, hash joins and index builds.
     work_mem: str = "256MB"
     maintenance_work_mem: str = "1GB"
 

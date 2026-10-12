@@ -16,9 +16,10 @@ import logging
 import random
 import time
 from array import array
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator
+from typing import Any, BinaryIO
 
 import orjson
 import zstandard
@@ -86,8 +87,6 @@ def base36(n: int) -> str:
 
 
 class _Writer:
-    """Writes one entity file and tracks what was emitted."""
-
     def __init__(self, fh: BinaryIO, entity: str) -> None:
         self.fh = fh
         self.entity = entity
@@ -153,8 +152,6 @@ class Generator:
         self.sub_subreddit = array("l")
         self.sub_created = array("q")
 
-    # -- helpers ------------------------------------------------------------
-
     def _junk_id(self) -> str:
         self._junk += 1
         return base36(self._junk)
@@ -181,7 +178,7 @@ class Generator:
         id_field = "name" if entity == "authors" else "id"
         if kind == "duplicate":
             # A later re-crawl of the same object: newer retrieval with a changed score.
-            rec["retrieved_on"] = rec["retrieved_on"] + 3_600
+            rec["retrieved_on"] += 3_600
             for field in ("score", "subscribers", "link_karma"):
                 if field in rec:
                     rec[field] += 1
@@ -224,8 +221,6 @@ class Generator:
             candidate = f"t5_{self.rng.choice(self.subreddit_ids)}"
             if candidate != fullname:
                 return candidate
-
-    # -- entities -----------------------------------------------------------
 
     def subreddits(self, out: _Writer) -> None:
         rng = self.rng

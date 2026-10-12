@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import gzip
 import io
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO
 
 import zstandard
 
@@ -27,11 +28,10 @@ def find_source(data_dir: Path, entity: str) -> Path | None:
 
 @contextmanager
 def open_binary(path: Path) -> Iterator[BinaryIO]:
-    name = path.name
-    if name.endswith(".gz"):
+    if path.name.endswith(".gz"):
         with gzip.open(path, "rb") as fh:
             yield fh
-    elif name.endswith(".zst"):
+    elif path.name.endswith(".zst"):
         with path.open("rb") as raw:
             reader = zstandard.ZstdDecompressor(max_window_size=_ZSTD_MAX_WINDOW).stream_reader(raw)
             with io.BufferedReader(reader, buffer_size=1 << 20) as fh:

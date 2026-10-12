@@ -1,13 +1,12 @@
-"""Stage validated records with COPY, then merge them into the core tables.
+"""Load one entity in two steps.
 
-Stage: every input line is decoded and validated in Python; valid rows stream
-into an UNLOGGED staging table through a single COPY, rejected lines are
-spooled to disk and bulk-copied into etl.rejected_records.
+stage(): validate each line in Python and stream valid rows into an UNLOGGED
+staging table with a single COPY. Rejected lines are spooled to a temp file
+and copied into etl.rejected_records afterwards (one connection can't run two
+COPYs at once).
 
-Merge: set-based SQL per entity finds superseded duplicates (keeping the most
-recently retrieved version of each natural key) and rows whose parents are
-missing, records the latter as integrity rejects and upserts the rest into
-the core table.
+merge(): in SQL, find superseded duplicates and rows with missing parents,
+record the latter as rejects, and upsert everything else into reddit.*.
 """
 
 from __future__ import annotations
@@ -80,7 +79,8 @@ def stage(conn: psycopg.Connection, entity: Entity, path: Path, run_id: int,
             for line_no, raw in iter_lines(path):
                 result.records_read += 1
                 if result.records_read % progress_every == 0:
-                    _log_progress(entity, result, started)
+                    log.info("%s: %s lines read, %s rejected", entity.name,
+                             f"{result.records_read:,}", f"{result.records_rejected_validation:,}")
                 try:
                     record = orjson.loads(raw)
                     if not isinstance(record, dict):
@@ -116,36 +116,22 @@ def stage(conn: psycopg.Connection, entity: Entity, path: Path, run_id: int,
     conn.commit()
 
     result.seconds = time.perf_counter() - started
-    log.info("%s: staged %s of %s lines (%s rejected by validation) in %.1fs, %s lines/s",
-             entity.name, f"{result.records_staged:,}", f"{result.records_read:,}",
-             f"{result.records_rejected_validation:,}", result.seconds,
-             f"{result.records_read / max(result.seconds, 1e-9):,.0f}")
+    log.info("%s: staged %s of %s lines (%s invalid) in %.1fs", entity.name, f"{result.records_staged:,}",
+             f"{result.records_read:,}", f"{result.records_rejected_validation:,}", result.seconds)
     return result
 
 
-def _log_progress(entity: Entity, result: StageResult, started: float) -> None:
-    elapsed = time.perf_counter() - started
-    log.info("%s: %s lines read, %s rejected, %s lines/s", entity.name,
-             f"{result.records_read:,}", f"{result.records_rejected_validation:,}",
-             f"{result.records_read / max(elapsed, 1e-9):,.0f}")
-
-
-# ---------------------------------------------------------------------------
-# Merge
-# ---------------------------------------------------------------------------
-
 @dataclass(frozen=True)
 class MergeSpec:
-    # Core column -> expression over the staging table.
-    columns: dict[str, str]
-    # Staging columns needed to evaluate reject_reason.
+    columns: dict[str, str]  # core column -> expression over staging alias "s"
+    # Parent checks: the staging columns they read, the joins, and a CASE naming
+    # the first missing parent (NULL when the row is fine).
     reference_columns: tuple[str, ...] = ()
-    # Joins and CASE expression that name the first missing parent, or NULL.
     reject_joins: str = ""
     reject_reason: str = "NULL::text"
 
 
-def _core(columns: tuple[str, ...]) -> dict[str, str]:
+def _core_columns(columns: tuple[str, ...]) -> dict[str, str]:
     mapped = {c: f"s.{c}" for c in columns if c not in ("created_utc", "retrieved_utc", "source_line")}
     mapped["created_at"] = "to_timestamp(s.created_utc)"
     mapped["retrieved_at"] = "to_timestamp(s.retrieved_utc)"
@@ -153,10 +139,10 @@ def _core(columns: tuple[str, ...]) -> dict[str, str]:
 
 
 MERGE_SPECS: dict[str, MergeSpec] = {
-    "subreddits": MergeSpec(columns=_core(SUBREDDITS.staging_columns)),
-    "authors": MergeSpec(columns=_core(AUTHORS.staging_columns)),
+    "subreddits": MergeSpec(columns=_core_columns(SUBREDDITS.staging_columns)),
+    "authors": MergeSpec(columns=_core_columns(AUTHORS.staging_columns)),
     "submissions": MergeSpec(
-        columns=_core(SUBMISSIONS.staging_columns),
+        columns=_core_columns(SUBMISSIONS.staging_columns),
         reference_columns=("subreddit_id", "author_name"),
         reject_joins=(
             "LEFT JOIN reddit.subreddits r ON r.subreddit_id = d.subreddit_id "
@@ -168,7 +154,7 @@ MERGE_SPECS: dict[str, MergeSpec] = {
         ),
     ),
     "comments": MergeSpec(
-        columns=_core(COMMENTS.staging_columns),
+        columns=_core_columns(COMMENTS.staging_columns),
         reference_columns=("submission_id", "subreddit_id", "author_name"),
         reject_joins=(
             "LEFT JOIN reddit.submissions s ON s.submission_id = d.submission_id "

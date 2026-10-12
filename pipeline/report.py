@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from pipeline import db
 from pipeline.config import Settings
@@ -14,7 +15,8 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
     numeric = [all(isinstance(row[i], (int, float)) or row[i] is None for row in rows) for i in range(len(headers))]
 
     def fmt(values: Sequence[str]) -> str:
-        return "  ".join(v.rjust(w) if n else v.ljust(w) for v, w, n in zip(values, widths, numeric)).rstrip()
+        padded = (v.rjust(w) if n else v.ljust(w) for v, w, n in zip(values, widths, numeric, strict=True))
+        return "  ".join(padded).rstrip()
 
     lines = [fmt(headers), "  ".join("-" * w for w in widths)]
     lines.extend(fmt(r) for r in cells)

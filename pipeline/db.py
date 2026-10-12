@@ -1,5 +1,3 @@
-"""Database connection and schema helpers."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,13 +9,17 @@ from pipeline.config import Settings
 
 SCHEMA_FILE = Path(__file__).resolve().parent.parent / "sql" / "schema.sql"
 
+# Any constant works; it just has to be the same for every pipeline process.
+RUN_LOCK_KEY = 72_756_110_001
 
-def connect(settings: Settings, *, autocommit: bool = False) -> psycopg.Connection:
-    return psycopg.connect(settings.database_url, autocommit=autocommit, application_name="reddit-etl")
+
+def connect(settings: Settings) -> psycopg.Connection:
+    return psycopg.connect(settings.database_url, application_name="reddit-etl")
 
 
 def configure_bulk_session(conn: psycopg.Connection, settings: Settings) -> None:
-    """Session settings that favour load throughput over per-commit durability."""
+    # synchronous_commit=off risks losing the last few commits on a crash, which is
+    # fine here: a rerun reloads the same input idempotently.
     with conn.cursor() as cur:
         for name, value in (
             ("synchronous_commit", "off"),
@@ -28,19 +30,14 @@ def configure_bulk_session(conn: psycopg.Connection, settings: Settings) -> None
     conn.commit()
 
 
-# Arbitrary application-wide key for the advisory lock that serializes pipeline runs.
-RUN_LOCK_KEY = 72_756_110_001
-
-
 def try_acquire_run_lock(conn: psycopg.Connection) -> bool:
-    """Session-level lock, released automatically when the connection closes."""
+    # Session-level, so it's released automatically if the process dies.
     acquired = conn.execute("SELECT pg_try_advisory_lock(%s)", (RUN_LOCK_KEY,)).fetchone()[0]
     conn.commit()
     return bool(acquired)
 
 
 def apply_schema(conn: psycopg.Connection) -> None:
-    """Create schemas and tables (idempotent), then ensure indexes and foreign keys exist."""
     conn.execute(SCHEMA_FILE.read_text())
     conn.commit()
     constraints.ensure(conn)
