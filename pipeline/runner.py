@@ -1,4 +1,4 @@
-"""End-to-end pipeline run: stage, merge, enforce constraints, check quality."""
+"""Orchestrates a run: stage and merge each entity, restore constraints, run quality checks."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def run(settings: Settings, data_dir: Path, mode: str = "auto") -> RunOutcome:
         log.info("Run %d started (%s mode) from %s", run_id, mode, data_dir)
 
         started = time.perf_counter()
-        totals = {"read": 0, "accepted": 0}
+        lines_read = accepted = 0
         try:
             if mode == "bulk":
                 constraints.drop(conn)
@@ -68,8 +68,8 @@ def run(settings: Settings, data_dir: Path, mode: str = "auto") -> RunOutcome:
                                     progress_every=settings.progress_every)
                 merged = load.merge(conn, entity, run_id, staged.records_staged, bulk=mode == "bulk")
                 _record_stats(conn, run_id, entity.name, path, staged, merged)
-                totals["read"] += staged.records_read
-                totals["accepted"] += merged.records_accepted
+                lines_read += staged.records_read
+                accepted += merged.records_accepted
             if mode == "bulk":
                 log.info("Rebuilding secondary indexes and validating foreign keys")
             constraints.ensure(conn)
@@ -86,14 +86,12 @@ def run(settings: Settings, data_dir: Path, mode: str = "auto") -> RunOutcome:
         status = "quality_failed" if failed else "succeeded"
         _finish_run(conn, run_id, status)
         seconds = time.perf_counter() - started
-        log.info("Run %d %s in %.1fs: %s lines read, %s records accepted (%s lines/s)",
-                 run_id, status, seconds, f"{totals['read']:,}", f"{totals['accepted']:,}",
-                 f"{totals['read'] / max(seconds, 1e-9):,.0f}")
-        return RunOutcome(run_id, status, seconds, totals["read"], totals["accepted"], results)
+        log.info("Run %d %s in %.1fs: %s lines read, %s accepted (%s lines/s)", run_id, status, seconds,
+                 f"{lines_read:,}", f"{accepted:,}", f"{lines_read / max(seconds, 1e-9):,.0f}")
+        return RunOutcome(run_id, status, seconds, lines_read, accepted, results)
 
 
 def check_latest(settings: Settings) -> list[quality.CheckResult]:
-    """Re-run quality checks against the most recent run."""
     with db.connect(settings) as conn:
         row = conn.execute("SELECT max(run_id) FROM etl.pipeline_runs").fetchone()
         if not row or row[0] is None:
@@ -102,7 +100,7 @@ def check_latest(settings: Settings) -> list[quality.CheckResult]:
 
 
 def _fail_interrupted_runs(conn: psycopg.Connection) -> None:
-    """Runs still marked 'running' while we hold the lock were killed before finishing."""
+    # Only called while holding the run lock, so anything still 'running' was killed mid-run.
     cur = conn.execute(
         "UPDATE etl.pipeline_runs SET status = 'failed', finished_at = now(),"
         " error = 'Interrupted before completion' WHERE status = 'running'"
@@ -113,12 +111,13 @@ def _fail_interrupted_runs(conn: psycopg.Connection) -> None:
 
 
 def _restore_constraints(conn: psycopg.Connection) -> None:
-    """Best effort after a failure: leave the core tables with their indexes and foreign keys."""
+    # A failed bulk run may have dropped FKs/indexes. Try to put them back now; if that also
+    # fails, apply_schema() rebuilds them at the start of the next run anyway.
     try:
         constraints.ensure(conn)
-    except Exception:
+    except psycopg.Error:
         conn.rollback()
-        log.exception("Could not restore constraints; they will be rebuilt on the next run")
+        log.exception("Could not restore constraints after failed run")
 
 
 def _start_run(conn: psycopg.Connection, data_dir: Path, mode: str) -> int:

@@ -54,7 +54,6 @@ def drop(conn: psycopg.Connection) -> None:
 
 
 def ensure(conn: psycopg.Connection) -> None:
-    """Create any missing indexes and foreign keys. Adding a foreign key validates all rows."""
     with conn.cursor() as cur:
         for name, definition in INDEXES:
             if not _index_exists(cur, name):

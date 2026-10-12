@@ -31,11 +31,10 @@ class Check:
 class CheckResult:
     check: Check
     observed: float
-    threshold: float
 
     @property
     def passed(self) -> bool:
-        return self.observed <= self.threshold
+        return self.observed <= self.check.threshold
 
 
 def build_checks(settings: Settings) -> list[Check]:
@@ -43,7 +42,7 @@ def build_checks(settings: Settings) -> list[Check]:
     return [
         Check(
             "load_reconciliation", "error",
-            "Entities where read != staged + validation rejects, or staged != duplicates + integrity rejects + accepted",
+            "Entities where read != staged + invalid, or staged != duplicates + orphaned + accepted",
             """SELECT count(*) FROM etl.load_stats
                WHERE run_id = %(run_id)s
                  AND (records_read <> records_staged + records_rejected_validation
@@ -149,7 +148,7 @@ def run_checks(conn: psycopg.Connection, run_id: int, settings: Settings) -> lis
         for check in build_checks(settings):
             cur.execute(check.sql, {"run_id": run_id})
             observed = float(cur.fetchone()[0] or 0)
-            result = CheckResult(check, observed, check.threshold)
+            result = CheckResult(check, observed)
             results.append(result)
             cur.execute(
                 "INSERT INTO etl.quality_results"

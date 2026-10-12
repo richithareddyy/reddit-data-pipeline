@@ -1,8 +1,8 @@
-"""Record-level validation and normalization for Pushshift-style Reddit records.
+"""Per-record validation for Pushshift-style Reddit records.
 
-Each validator takes a decoded JSON object and returns a tuple in the entity's
-staging column order (see entities.py), or raises Rejected with a short,
-machine-readable reason. Referential checks happen later, set-based, in SQL.
+Each entity method returns a tuple in that entity's staging column order, or
+raises Rejected with a short reason code. Checks that need other records
+(duplicates, missing parents) happen later in SQL.
 """
 
 from __future__ import annotations
@@ -10,10 +10,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from typing import Any, Callable
-
-Record = dict[str, Any]
-Row = tuple[Any, ...]
+from typing import Any
 
 _BASE36 = re.compile(r"[0-9a-z]{1,13}")
 _SUBREDDIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_]{1,20}")
@@ -21,7 +18,7 @@ _AUTHOR_NAME = re.compile(r"[A-Za-z0-9_-]{3,20}")
 _PARENT_ID = re.compile(r"t[13]_[0-9a-z]{1,13}")
 _DELETED_AUTHORS = frozenset({"", "[deleted]", "[removed]"})
 
-REDDIT_EPOCH = 1_119_484_800  # 2005-06-23, earliest possible Reddit timestamp
+REDDIT_EPOCH = 1_119_484_800  # 2005-06-23, nothing on Reddit predates this
 FUTURE_TOLERANCE_SECONDS = 86_400
 INT32_MAX = 2**31 - 1
 INT64_MAX = 2**63 - 1
@@ -33,7 +30,7 @@ class Rejected(Exception):
         self.reason = reason
 
 
-def _require(record: Record, field: str) -> Any:
+def _require(record: dict, field: str) -> Any:
     value = record.get(field)
     if value is None:
         raise Rejected(f"missing_{field}")
@@ -54,6 +51,7 @@ def _int(value: Any, field: str, *, minimum: int = -INT32_MAX, maximum: int = IN
          default: int | None = None) -> int | None:
     if value is None:
         return default
+    # bool is a subclass of int, so it has to be ruled out before the int branch
     if isinstance(value, bool):
         raise Rejected(f"invalid_{field}")
     if isinstance(value, float):
@@ -62,7 +60,7 @@ def _int(value: Any, field: str, *, minimum: int = -INT32_MAX, maximum: int = IN
         value = int(value)
     elif isinstance(value, str):
         try:
-            value = int(value.strip())
+            value = int(value)
         except ValueError:
             raise Rejected(f"invalid_{field}") from None
     elif not isinstance(value, int):
@@ -90,8 +88,8 @@ def _text(value: Any, field: str, *, max_length: int | None = None,
         return None
     if not isinstance(value, str):
         raise Rejected(f"invalid_{field}")
-    if "\x00" in value:  # PostgreSQL text cannot store NUL characters
-        value = value.replace("\x00", "")
+    # PostgreSQL text can't store NUL, so strip it rather than reject the whole record
+    value = value.replace("\x00", "")
     if required and not value.strip():
         raise Rejected(f"blank_{field}")
     if max_length is not None and len(value) > max_length:
@@ -106,42 +104,39 @@ def _name(value: Any, field: str, pattern: re.Pattern[str]) -> str:
 
 
 def _author(value: Any) -> str | None:
-    if value is None or value in _DELETED_AUTHORS:
+    if value is None or (isinstance(value, str) and value in _DELETED_AUTHORS):
         return None
-    if not isinstance(value, str) or not _AUTHOR_NAME.fullmatch(value):
-        raise Rejected("invalid_author")
-    return value
+    return _name(value, "author", _AUTHOR_NAME)
 
 
 class RecordValidator:
-    """Validators for each entity. `now` fixes the upper bound for timestamps."""
-
+    # `now` is injectable so tests can pin the future-timestamp cutoff.
     def __init__(self, now: float | None = None) -> None:
         self._max_ts = int(now if now is not None else time.time()) + FUTURE_TOLERANCE_SECONDS
 
-    def for_entity(self, name: str) -> Callable[[Record], Row]:
+    def for_entity(self, name: str):
         return getattr(self, name)
 
     def _timestamp(self, value: Any, field: str) -> int:
-        if isinstance(value, bool):
-            raise Rejected(f"invalid_{field}")
         if isinstance(value, str):
             try:
-                value = float(value.strip())
+                value = float(value)
             except ValueError:
                 raise Rejected(f"invalid_{field}") from None
-        if not isinstance(value, (int, float)) or (isinstance(value, float) and not math.isfinite(value)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise Rejected(f"invalid_{field}")
+        if isinstance(value, float) and not math.isfinite(value):
             raise Rejected(f"invalid_{field}")
         ts = int(value)
         if not REDDIT_EPOCH <= ts <= self._max_ts:
             raise Rejected(f"out_of_range_{field}")
         return ts
 
-    def _retrieved(self, record: Record) -> int | None:
-        value = record.get("retrieved_on", record.get("retrieved_utc"))
+    def _retrieved(self, r: dict) -> int | None:
+        value = r.get("retrieved_on", r.get("retrieved_utc"))
         return None if value is None else self._timestamp(value, "retrieved_on")
 
-    def subreddits(self, r: Record) -> Row:
+    def subreddits(self, r: dict) -> tuple:
         return (
             _base36(_require(r, "id"), "id", prefix="t5_"),
             _name(_require(r, "display_name"), "display_name", _SUBREDDIT_NAME),
@@ -154,7 +149,7 @@ class RecordValidator:
             self._retrieved(r),
         )
 
-    def authors(self, r: Record) -> Row:
+    def authors(self, r: dict) -> tuple:
         author_id = r.get("id")
         return (
             _name(_require(r, "name"), "name", _AUTHOR_NAME),
@@ -165,7 +160,7 @@ class RecordValidator:
             self._retrieved(r),
         )
 
-    def submissions(self, r: Record) -> Row:
+    def submissions(self, r: dict) -> tuple:
         return (
             _base36(_require(r, "id"), "id", prefix="t3_"),
             _base36(_require(r, "subreddit_id"), "subreddit_id", prefix="t5_"),
@@ -182,7 +177,8 @@ class RecordValidator:
             self._retrieved(r),
         )
 
-    def comments(self, r: Record) -> Row:
+    def comments(self, r: dict) -> tuple:
+        # parent_id keeps its t1_/t3_ prefix since that's what says whether it's a reply
         parent_id = _require(r, "parent_id")
         if not isinstance(parent_id, str) or not _PARENT_ID.fullmatch(parent_id):
             raise Rejected("invalid_parent_id")

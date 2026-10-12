@@ -1,5 +1,3 @@
-"""Command-line interface: python -m pipeline <command>."""
-
 from __future__ import annotations
 
 import argparse
@@ -9,6 +7,8 @@ from pathlib import Path
 
 from pipeline import db, generate, report, runner
 from pipeline.config import load_settings
+
+log = logging.getLogger("pipeline")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -56,14 +56,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init-db":
         with db.connect(settings) as conn:
             db.apply_schema(conn)
-        logging.getLogger("pipeline").info("Database schema is ready")
+        log.info("Database schema is ready")
         return 0
 
     if args.command == "run":
         try:
             outcome = runner.run(settings, args.data_dir, args.mode)
         except (runner.RunInProgressError, FileNotFoundError) as exc:
-            logging.getLogger("pipeline").error("%s", exc)
+            log.error("%s", exc)
             return 2
         print()
         print(report.render(settings, outcome.run_id))
@@ -73,11 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         results = runner.check_latest(settings)
         return 1 if any(not r.passed and r.check.severity == "error" for r in results) else 0
 
-    if args.command == "report":
-        print(report.render(settings, args.run_id))
-        return 0
-
-    return 2
+    print(report.render(settings, args.run_id))
+    return 0
 
 
 if __name__ == "__main__":
