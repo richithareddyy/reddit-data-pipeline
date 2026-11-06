@@ -1,10 +1,8 @@
 # Reddit Data Pipeline
 
-Load Reddit-format archives into PostgreSQL with validation, deduplication, rejection records, and an audit trail for each run.
+Archive dumps are full of malformed lines, duplicates, and records whose parents never show up. A naive load either crashes or quietly stores bad data. This pipeline loads Reddit-format archives into PostgreSQL 16 and keeps a reason for every record it rejects, along with an audit trail for each run.
 
-**Python · PostgreSQL 16 · SQL · Docker**
-
-I built this around the less tidy parts of loading data: malformed records, overlapping archives, missing parent rows, and runs interrupted halfway through. Python streams and validates the input; PostgreSQL handles staging, merges, and integrity checks.
+Python streams and validates the input; PostgreSQL handles staging, merges, and integrity checks.
 
 ## Run locally
 
@@ -23,7 +21,9 @@ For your own archives, see the [input format](GUIDE.md#using-real-reddit-dumps).
 
 ## How it works
 
-Records enter staging through streaming `COPY`, then set-based SQL selects valid rows and applies upserts. Loads follow dependency order: communities, authors, submissions, then comments. Older snapshots cannot overwrite newer rows. An advisory lock prevents concurrent runs from sharing staging state.
+Records enter unlogged staging tables through streaming `COPY`, then set-based SQL selects valid rows and applies upserts. Loads follow dependency order: communities, authors, submissions, then comments. Older snapshots cannot overwrite newer rows, so re-running after a failure is safe. An advisory lock prevents concurrent runs from sharing staging state.
+
+The main performance decision is the merge. One window-function pass over narrow columns finds only the rows that must *not* load, and the upsert anti-joins against that small set, so full-width records are never sorted or copied to a temp table. Along with skipping WAL on the initial insert, that took the generated 18.9-million-line benchmark from 584 s to 345 s. On an empty database, the pipeline also drops foreign keys and secondary indexes, then rebuilds and revalidates them after the load.
 
 Tests cover validation, repeat loads, newer-record updates, compressed input, and interrupted bulk loads. Thirteen quality checks inspect the loaded database.
 
