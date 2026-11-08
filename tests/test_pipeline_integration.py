@@ -166,3 +166,36 @@ def test_failed_bulk_run_restores_constraints(tmp_path, settings, monkeypatch):
     validated = _fetch("SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND convalidated"
                        " AND conname = ANY(%s)", ([name for _, name, _ in FOREIGN_KEYS],))
     assert validated == [(len(FOREIGN_KEYS),)]
+
+
+def test_derive_authors_loads_dumps_without_an_authors_file(tmp_path, settings):
+    def write(entity, rows):
+        (tmp_path / f"{entity}.ndjson").write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in rows))
+
+    write("subreddits", [{"id": "abc", "display_name": "example", "created_utc": 1_300_000_000}])
+    write("submissions", [{"id": "p1", "subreddit_id": "t5_abc", "author": "poster", "title": "Hi",
+                           "created_utc": 1_600_000_000}])
+    write("comments", [
+        {"id": "c1", "link_id": "t3_p1", "parent_id": "t3_p1", "subreddit_id": "t5_abc",
+         "author": "replier", "body": "x", "created_utc": 1_600_000_100},
+        {"id": "c2", "link_id": "t3_p1", "parent_id": "t1_c1", "subreddit_id": "t5_abc",
+         "author": "[deleted]", "body": "y", "created_utc": 1_600_000_200},
+    ])
+
+    outcome = runner.run(settings, tmp_path, derive_authors=True)
+    assert outcome.status == "succeeded"
+    assert _fetch("SELECT author_name, created_at FROM reddit.authors ORDER BY 1") == [
+        ("poster", None), ("replier", None)]
+    assert _fetch("SELECT count(*) FROM reddit.comments") == [(2,)]
+    assert _fetch("SELECT records_upserted FROM etl.load_stats WHERE entity = 'authors'") == [(2,)]
+
+
+def test_without_derive_authors_named_authors_are_still_orphans(tmp_path, settings):
+    (tmp_path / "subreddits.ndjson").write_bytes(
+        orjson.dumps({"id": "abc", "display_name": "example", "created_utc": 1_300_000_000}) + b"\n")
+    (tmp_path / "submissions.ndjson").write_bytes(orjson.dumps(
+        {"id": "p1", "subreddit_id": "t5_abc", "author": "poster", "title": "Hi",
+         "created_utc": 1_600_000_000}) + b"\n")
+
+    runner.run(replace(settings, max_reject_rate=1.0), tmp_path)
+    assert _fetch("SELECT reason FROM etl.rejected_records") == [("orphan_author",)]

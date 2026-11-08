@@ -32,8 +32,11 @@ class RunOutcome:
     quality: list[quality.CheckResult]
 
 
-def run(settings: Settings, data_dir: Path, mode: str = "auto") -> RunOutcome:
+def run(settings: Settings, data_dir: Path, mode: str = "auto", derive_authors: bool = False) -> RunOutcome:
     sources = {e.name: find_source(data_dir, e.name) for e in LOAD_ORDER}
+    if derive_authors and sources["authors"]:
+        log.warning("Ignoring --derive-authors: %s exists", sources["authors"].name)
+        derive_authors = False
     if not any(sources.values()):
         raise FileNotFoundError(
             f"No input files found in {data_dir}. Expected files such as "
@@ -53,7 +56,7 @@ def run(settings: Settings, data_dir: Path, mode: str = "auto") -> RunOutcome:
         log.info("Run %d started (%s mode) from %s", run_id, mode, data_dir)
 
         started = time.perf_counter()
-        lines_read = accepted = 0
+        lines_read = accepted = derived = 0
         try:
             if mode == "bulk":
                 constraints.drop(conn)
@@ -61,15 +64,20 @@ def run(settings: Settings, data_dir: Path, mode: str = "auto") -> RunOutcome:
             for entity in LOAD_ORDER:
                 path = sources[entity.name]
                 if path is None:
-                    log.warning("%s: no input file found, skipping", entity.name)
+                    if entity.name != "authors" or not derive_authors:
+                        log.warning("%s: no input file found, skipping", entity.name)
                     continue
                 staged = load.stage(conn, entity, path, run_id, validator,
                                     batch_rows=settings.copy_batch_rows,
                                     progress_every=settings.progress_every)
-                merged = load.merge(conn, entity, run_id, staged.records_staged, bulk=mode == "bulk")
+                merged = load.merge(conn, entity, run_id, staged.records_staged,
+                                    bulk=mode == "bulk", derive_authors=derive_authors)
                 _record_stats(conn, run_id, entity.name, path, staged, merged)
                 lines_read += staged.records_read
                 accepted += merged.records_accepted
+                derived += merged.authors_derived
+            if derive_authors:
+                _record_derived_authors(conn, run_id, derived)
             if mode == "bulk":
                 log.info("Rebuilding secondary indexes and validating foreign keys")
             constraints.ensure(conn)
@@ -148,6 +156,18 @@ def _record_stats(conn: psycopg.Connection, run_id: int, entity: str, path: Path
         (run_id, entity, path.name, staged.records_read, staged.records_rejected_validation,
          staged.records_staged, merged.duplicates, merged.records_rejected_integrity,
          merged.records_accepted, merged.records_upserted, round(staged.seconds, 3), round(merged.seconds, 3)),
+    )
+    conn.commit()
+
+
+def _record_derived_authors(conn: psycopg.Connection, run_id: int, derived: int) -> None:
+    conn.execute(
+        """INSERT INTO etl.load_stats (
+               run_id, entity, source_file, records_read, records_rejected_validation, records_staged,
+               duplicates, records_rejected_integrity, records_accepted, records_upserted,
+               extract_seconds, merge_seconds)
+           VALUES (%s, 'authors', '(derived)', 0, 0, 0, 0, 0, 0, %s, 0, 0)""",
+        (run_id, derived),
     )
     conn.commit()
 

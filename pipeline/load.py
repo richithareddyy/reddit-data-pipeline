@@ -45,6 +45,7 @@ class MergeResult:
     records_rejected_integrity: int = 0
     records_accepted: int = 0
     records_upserted: int = 0
+    authors_derived: int = 0
     seconds: float = 0.0
 
 
@@ -170,7 +171,7 @@ MERGE_SPECS: dict[str, MergeSpec] = {
 
 
 def merge(conn: psycopg.Connection, entity: Entity, run_id: int, staged: int, *,
-          bulk: bool = False) -> MergeResult:
+          bulk: bool = False, derive_authors: bool = False) -> MergeResult:
     spec = MERGE_SPECS[entity.name]
     result = MergeResult()
     started = time.perf_counter()
@@ -183,6 +184,16 @@ def merge(conn: psycopg.Connection, entity: Entity, run_id: int, staged: int, *,
     ref_columns = "".join(f", {c}" for c in spec.reference_columns)
 
     with conn.cursor() as cur:
+        # Reddit dumps have no authors file, so authors can be taken from the staged rows.
+        # This has to run before the parent checks below or every named author is an orphan.
+        if derive_authors and "author_name" in spec.reference_columns:
+            cur.execute(f"""
+                INSERT INTO reddit.authors (author_name)
+                SELECT DISTINCT author_name FROM staging.{table} WHERE author_name IS NOT NULL
+                ON CONFLICT (author_name) DO NOTHING
+            """)
+            result.authors_derived = cur.rowcount
+
         # Collect only the rows that must NOT be loaded: superseded duplicates (latest
         # retrieval wins, ties go to the later line) and rows with a missing parent.
         # Working on this narrow set avoids sorting or copying full-width records.

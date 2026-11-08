@@ -14,7 +14,8 @@ from typing import Any
 
 _BASE36 = re.compile(r"[0-9a-z]{1,13}")
 _SUBREDDIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_]{1,20}")
-_AUTHOR_NAME = re.compile(r"[A-Za-z0-9_-]{3,20}")
+# Usernames are 3-20 characters, but Reddit's per-community "<subreddit>-ModTeam" accounts are longer.
+_AUTHOR_NAME = re.compile(r"[A-Za-z0-9_-]{3,20}|[A-Za-z0-9][A-Za-z0-9_]{1,20}-ModTeam")
 _PARENT_ID = re.compile(r"t[13]_[0-9a-z]{1,13}")
 _DELETED_AUTHORS = frozenset({"", "[deleted]", "[removed]"})
 

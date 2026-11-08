@@ -86,14 +86,21 @@ CREATE TABLE IF NOT EXISTS reddit.subreddits (
 );
 
 CREATE TABLE IF NOT EXISTS reddit.authors (
-    author_name     text PRIMARY KEY CHECK (author_name ~ '^[A-Za-z0-9_-]{3,20}$'),
+    author_name     text PRIMARY KEY,
     author_id       text CHECK (author_id ~ '^[0-9a-z]{1,13}$'),
     link_karma      bigint,
     comment_karma   bigint,
-    created_at      timestamptz NOT NULL,
+    created_at      timestamptz,  -- unknown for authors derived from posts and comments
     retrieved_at    timestamptz,
     loaded_at       timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE reddit.authors ALTER COLUMN created_at DROP NOT NULL;
+
+-- Kept outside CREATE TABLE so existing databases pick up the "<subreddit>-ModTeam" form too.
+ALTER TABLE reddit.authors DROP CONSTRAINT IF EXISTS authors_author_name_check;
+ALTER TABLE reddit.authors ADD CONSTRAINT authors_author_name_check
+    CHECK (author_name ~ '^([A-Za-z0-9_-]{3,20}|[A-Za-z0-9][A-Za-z0-9_]{1,20}-ModTeam)$');
 
 CREATE TABLE IF NOT EXISTS reddit.submissions (
     submission_id   text PRIMARY KEY CHECK (submission_id ~ '^[0-9a-z]{1,13}$'),

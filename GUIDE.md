@@ -12,7 +12,7 @@ The problem is making repeated archive loads both inspectable and safe to rerun:
 | --- | --- | --- |
 | Newline-delimited JSON, plain or compressed with gzip/Zstandard | Validation, staging, deduplication, and upserts | Relational tables, rejected-record reports, and 13 data-quality checks |
 
-**Benchmark scope:** The reported 18.9-million-line benchmark uses generated data with deliberately injected defects. It demonstrates the pipeline on a reproducible test dataset; runtime depends on hardware and input characteristics.
+**Benchmark scope:** The reported 18.9-million-line benchmark uses generated data with deliberately injected defects. It demonstrates the pipeline on a reproducible test dataset; runtime depends on hardware and input characteristics. A separate [real-data run](#real-data-run) loads the full r/dataengineering archive (708,040 lines).
 
 ## Contents
 
@@ -23,6 +23,7 @@ The problem is making repeated archive loads both inspectable and safe to rerun:
 - [Data quality checks](#data-quality-checks)
 - [Bulk load optimizations](#bulk-load-optimizations)
 - [Benchmark](#benchmark)
+- [Real-data run](#real-data-run)
 - [Using real Reddit dumps](#using-real-reddit-dumps)
 - [Configuration](#configuration)
 - [Testing](#testing)
@@ -67,6 +68,8 @@ Other commands:
 | Command | Description |
 | --- | --- |
 | `make generate SCALE=tiny\|small\|medium\|full` | Write synthetic dumps to `./data` (≈25K / 190K / 1.9M / 18.9M lines) |
+| `make fetch SUBREDDIT=name` | Download one subreddit from the Arctic Shift API to `./data/<name>` (resumable) |
+| `make load-real` / `make report-real` | Load that download into the separate `reddit_real` database / print its report |
 | `make load` | Run the full pipeline |
 | `make report` | Print the latest run summary |
 | `make check` | Re-run the quality checks |
@@ -81,7 +84,7 @@ The CLI can also be called directly: `docker compose run --rm pipeline --help`.
 | Schema | Table | Purpose |
 | --- | --- | --- |
 | `reddit` | `subreddits` | Communities, keyed by base-36 id |
-| `reddit` | `authors` | User accounts, keyed by username |
+| `reddit` | `authors` | User accounts, keyed by username (`created_at` is unknown for derived authors) |
 | `reddit` | `submissions` | Posts → `subreddits`, `authors` |
 | `reddit` | `comments` | Comments → `submissions`, `subreddits`, `authors` |
 | `staging` | one per entity | Unlogged, constraint-free landing tables written by `COPY` |
@@ -101,7 +104,7 @@ Foreign keys and secondary indexes are defined in [`pipeline/constraints.py`](pi
 - The line must be well-formed JSON and decode to an object.
 - Required fields must be present: IDs, names, `created_utc`, `subreddit_id`, `link_id` and `parent_id`.
 - IDs must be base-36. Reddit's type prefixes (`t1_`, `t2_`, `t3_`, `t5_`) are accepted and normalized away.
-- Subreddit and user names must match Reddit's naming rules.
+- Subreddit and user names must match Reddit's naming rules. Usernames are 3 to 20 characters, plus Reddit's longer `<subreddit>-ModTeam` moderator accounts.
 - Timestamps must be numeric and fall between Reddit's launch (2005-06-23) and one day in the future.
 - Integers must be real integers (booleans, fractional floats and non-numeric strings are rejected) and within column range. `num_comments` and `subscribers` must be non-negative, and `controversiality` must be 0 or 1.
 - Titles cannot be blank or longer than 300 characters. Text fields have length limits.
@@ -171,6 +174,27 @@ Each count matches the generator's manifest exactly, and all 13 quality checks p
 
 The narrow-exclusion merge described above, with WAL skipped on the initial insert, cut end-to-end time from 584 s to 345 s. The comments merge alone went from 267 s to 102 s. The loaded database is about 5.9 GB.
 
+## Real-data run
+
+The complete history of r/dataengineering, from its first post in February 2015 to November 7, 2026, was downloaded from the [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) API with `make fetch SUBREDDIT=dataengineering` and loaded with `make load-real`, on the same machine as the benchmark above. The [run report](results/dataengineering.md) is committed; the 1.3 GB download is not.
+
+| Entity | Lines read | Invalid | Duplicates | Orphaned | Loaded |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| subreddits | 1 | 0 | 0 | 0 | 1 |
+| submissions | 72,558 | 0 | 0 | 0 | 72,558 |
+| comments | 635,481 | 0 | 0 | 210 | 635,271 |
+| **total** | **708,040** | **0** | **0** | **210** | **707,830** |
+
+The load took 15.6 s end to end and produced a 353 MB database. All 13 quality checks passed: 0.03% of lines were rejected, 0.04% of replies point to a parent comment that is not in the archive, and 3.6% of comments have a deleted author. 82,383 authors were derived from the posts and comments.
+
+What the real data showed, compared with generated data:
+
+- **Orphans come from gaps in the archive.** The 210 rejected comments belong to 22 posts that the archive does not have.
+- **A validator rule was too strict.** The first load rejected 9,203 comments, every one from the `dataengineering-ModTeam` account. Reddit creates a `<subreddit>-ModTeam` account for each community, and its name is longer than the 20-character username limit. The rule now accepts that form, and the reload rejected none.
+- **No authors file exists.** Reddit dumps contain only posts and comments, which is why `--derive-authors` exists.
+
+The download spanned about 18 hours, much of it paused while the laptop slept. The API served 100 records per request, and it answered open-ended queries with HTTP 422 ("Timeout. Maybe slow down a bit") once the history got large. `fetch` therefore pages through 30-day windows, waits at least 10 s after a 422, and resumes from what is already on disk.
+
 ## Using real Reddit dumps
 
 Put one file per entity in the data directory, named after the entity:
@@ -187,6 +211,10 @@ Accepted extensions are `.ndjson`, `.jsonl` and `.json`, optionally compressed a
 
 If an entity's file is missing, that entity is skipped with a warning. Child records that reference its rows are then rejected as orphans, so load related dumps together.
 
+Reddit dumps have no authors file. `run --derive-authors` inserts each distinct author name found in the staged posts and comments before the integrity checks, leaving `created_at` and karma `NULL`. Without the flag, named authors are rejected as orphans as before.
+
+To get one subreddit's history, `pipeline fetch --subreddit NAME --out DIR` (or `make fetch SUBREDDIT=NAME`) downloads it from the [Arctic Shift API](https://github.com/ArthurHeitmann/arctic_shift/tree/master/api) into `subreddits.ndjson`, `submissions.ndjson` and `comments.ndjson`, plus a `source.json` summary that compares the counts with the API's own. It waits 1 s between requests, backs off on rate limits and timeouts, and resumes an interrupted download. The API is a free service intended for modest pulls; for large volumes use its monthly dumps. Archive content is user-generated and has no stated license, so check the terms that apply to your use, and keep downloaded data out of version control.
+
 ## Configuration
 
 Database settings come from `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST` and `POSTGRES_PORT`, or from a single `DATABASE_URL`. Copy `.env.example` to `.env` to override the defaults, for example to change the host port if 5432 is taken.
@@ -199,7 +227,7 @@ Database settings come from `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
 | `ETL_PROGRESS_EVERY` | `1000000` | Lines between progress log messages |
 | `ETL_WORK_MEM` / `ETL_MAINTENANCE_WORK_MEM` | `256MB` / `1GB` | Session memory for merges and index builds |
 
-Run options: `run --mode auto|bulk|incremental` (default `auto`), and `generate --scale`, `--defect-rate`, `--seed` and `--compress none|gz|zst`.
+Run options: `run --mode auto|bulk|incremental` (default `auto`) and `--derive-authors`; `generate --scale`, `--defect-rate`, `--seed` and `--compress none|gz|zst`; `fetch --subreddit`, `--out` and `--delay`.
 
 ## Testing
 
@@ -207,12 +235,13 @@ Run options: `run --mode auto|bulk|incremental` (default `auto`), and `generate 
 make test
 ```
 
-- **Unit tests** cover every validation rule and rejection reason, reading plain, gzip and zstd files, and the generator's determinism and manifest accuracy.
+- **Unit tests** cover every validation rule and rejection reason, reading plain, gzip and zstd files, and the generator's determinism and manifest accuracy. Fetch tests use a fake API to check paging across shared timestamps and empty windows, resuming after a half-written line, and retries on 422, 429, 5xx, timeouts and dropped connections.
 - **Integration tests** run against a separate `reddit_test` database:
   - They generate a dataset with planted defects and check that the pipeline loads exactly the clean records, and that its counts of invalid lines, duplicates and orphans match the generator's manifest exactly.
   - They check that re-running the same input changes no rows and that a newer retrieval updates an existing row.
   - They cover real-dump quirks: prefixed IDs, string timestamps, NUL bytes, deleted authors, invalid UTF-8 and gzip input.
   - They cover failure handling: a second run is refused while one holds the lock, an interrupted run is marked failed, and foreign keys are restored after a failed bulk load.
+  - They check that `--derive-authors` loads dumps with no authors file, and that without it named authors are still rejected as orphans.
 
 Unit tests also run without Docker: `pip install -r requirements-dev.txt && pytest`. The integration tests are skipped unless `TEST_DATABASE_URL` is set.
 
@@ -225,7 +254,7 @@ A GitHub Actions workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml
 - **Failure boundaries.** Staging and merges commit separately for each entity. An error rolls back the active transaction, records the failure, and attempts to restore constraints; already committed entities remain. A quality failure also leaves loaded rows in place and marks the run `quality_failed`. This is a rerunnable pipeline, not one all-or-nothing transaction across the entire archive.
 - **Safe to re-run.** Upserts only apply strictly newer data, so re-running after a failure or re-loading an overlapping dump never duplicates or regresses rows.
 
-The supplied Compose settings favor a local bulk-load experiment (`wal_level=minimal`, no replication, and asynchronous commits). They are not a production durability or replication configuration. There is no scheduler or live Reddit API collector in this repository.
+The supplied Compose settings favor a local bulk-load experiment (`wal_level=minimal`, no replication, and asynchronous commits). They are not a production durability or replication configuration. `fetch` is a one-off archive download; there is no scheduler or live Reddit API collector in this repository.
 
 ## Project structure
 
@@ -240,7 +269,7 @@ reddit-data-pipeline/
 │   ├── schema.sql            staging, core and etl schemas
 │   └── example_queries.sql
 ├── pipeline/
-│   ├── __main__.py           CLI: generate, init-db, run, check, report
+│   ├── __main__.py           CLI: generate, fetch, init-db, run, check, report
 │   ├── config.py             environment-driven settings
 │   ├── entities.py           entity definitions and load order
 │   ├── extract.py            file discovery and streaming decompression
@@ -250,6 +279,8 @@ reddit-data-pipeline/
 │   ├── quality.py            post-load quality checks
 │   ├── runner.py             run orchestration and bookkeeping
 │   ├── report.py             run summary output
+│   ├── fetch.py              one-subreddit downloader for the Arctic Shift API
 │   └── generate.py           synthetic dump generator with planted defects
+├── results/                  committed report from the real-data run
 └── tests/
 ```

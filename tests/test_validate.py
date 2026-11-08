@@ -84,6 +84,11 @@ def test_nul_bytes_are_removed_not_rejected():
     assert cols["body"] == "ab"
 
 
+def test_mod_team_accounts_are_valid_authors():
+    assert V.comments(comment(author="dataengineering-ModTeam"))[4] == "dataengineering-ModTeam"
+    assert V.authors(author(name="AskHistorians-ModTeam"))[0] == "AskHistorians-ModTeam"
+
+
 def test_float_scores_that_are_integers_are_accepted():
     assert V.comments(comment(score=3.0))[6] == 3
 
@@ -106,6 +111,8 @@ def test_float_scores_that_are_integers_are_accepted():
     (V.submissions, submission(over_18="yes"), "invalid_over_18"),
     (V.submissions, submission(author="has space"), "invalid_author"),
     (V.submissions, submission(author={"name": "x"}), "invalid_author"),
+    (V.submissions, submission(author="a_very_long_username_x"), "invalid_author"),
+    (V.submissions, submission(author="a" * 22 + "-ModTeam"), "invalid_author"),
     (V.submissions, submission(created_utc="last tuesday"), "invalid_created_utc"),
     (V.submissions, submission(created_utc=-86_400), "out_of_range_created_utc"),
     (V.submissions, submission(created_utc=NOW + 2 * 86_400), "out_of_range_created_utc"),

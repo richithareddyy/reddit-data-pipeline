@@ -5,7 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
-from pipeline import db, generate, report, runner
+from pipeline import db, fetch, generate, report, runner
 from pipeline.config import load_settings
 
 log = logging.getLogger("pipeline")
@@ -23,6 +23,11 @@ def _parser() -> argparse.ArgumentParser:
     gen.add_argument("--seed", type=int, default=42)
     gen.add_argument("--compress", choices=("none", "gz", "zst"), default="none")
 
+    get = sub.add_parser("fetch", help="download one subreddit from the Arctic Shift API")
+    get.add_argument("--subreddit", required=True)
+    get.add_argument("--out", type=Path, required=True, help="output directory; reruns resume")
+    get.add_argument("--delay", type=float, default=1.0, help="seconds between requests")
+
     sub.add_parser("init-db", help="create schemas, tables, indexes and foreign keys")
 
     run = sub.add_parser("run", help="run the full extract-validate-load-check pipeline")
@@ -30,6 +35,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--mode", choices=("auto", "bulk", "incremental"), default="auto",
                      help="bulk drops FKs/indexes during load and rebuilds them after; "
                           "auto picks bulk when the core tables are empty")
+    run.add_argument("--derive-authors", action="store_true",
+                     help="build authors from posts and comments (for dumps with no authors file)")
 
     sub.add_parser("check", help="re-run data quality checks for the latest run")
 
@@ -51,6 +58,10 @@ def main(argv: list[str] | None = None) -> int:
         generate.generate(args.out, args.scale, args.defect_rate, args.seed, args.compress)
         return 0
 
+    if args.command == "fetch":
+        fetch.fetch_subreddit(args.subreddit, args.out, delay=args.delay)
+        return 0
+
     settings = load_settings()
 
     if args.command == "init-db":
@@ -61,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "run":
         try:
-            outcome = runner.run(settings, args.data_dir, args.mode)
+            outcome = runner.run(settings, args.data_dir, args.mode, args.derive_authors)
         except (runner.RunInProgressError, FileNotFoundError) as exc:
             log.error("%s", exc)
             return 2
