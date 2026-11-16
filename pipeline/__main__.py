@@ -27,6 +27,7 @@ def _parser() -> argparse.ArgumentParser:
     get.add_argument("--subreddit", required=True)
     get.add_argument("--out", type=Path, required=True, help="output directory; reruns resume")
     get.add_argument("--delay", type=float, default=1.0, help="seconds between requests")
+    get.add_argument("--until", type=int, help="snapshot end as epoch seconds (default: now, kept on resume)")
 
     sub.add_parser("init-db", help="create schemas, tables, indexes and foreign keys")
 
@@ -59,7 +60,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "fetch":
-        fetch.fetch_subreddit(args.subreddit, args.out, delay=args.delay)
+        source = fetch.fetch_subreddit(args.subreddit, args.out, delay=args.delay, until=args.until)
+        if not source["complete"]:
+            log.error("Snapshot is incomplete; see saturated_seconds in %s", args.out / "source.json")
+            return 1
         return 0
 
     settings = load_settings()

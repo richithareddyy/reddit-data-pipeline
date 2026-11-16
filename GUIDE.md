@@ -176,7 +176,7 @@ The narrow-exclusion merge described above, with WAL skipped on the initial inse
 
 ## Real-data run
 
-The complete history of r/dataengineering, from its first post in February 2015 to November 7, 2026, was downloaded from the [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) API with `make fetch SUBREDDIT=dataengineering` and loaded with `make load-real`, on the same machine as the benchmark above. The [run report](results/dataengineering.md) is committed; the 1.3 GB download is not.
+Every r/dataengineering post and comment that the [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) API returned, with timestamps from February 6, 2015 to November 7, 2026, was downloaded with `make fetch SUBREDDIT=dataengineering` and loaded with `make load-real`, on the same machine as the benchmark above. The [run report](results/dataengineering.md) is committed; the 1.3 GB download is not.
 
 | Entity | Lines read | Invalid | Duplicates | Orphaned | Loaded |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -189,11 +189,21 @@ The load took 15.6 s end to end and produced a 353 MB database. All 13 quality c
 
 What the real data showed, compared with generated data:
 
-- **Orphans come from gaps in the archive.** The 210 rejected comments belong to 22 posts that the archive does not have.
+- **Orphans come from gaps in the archive.** The 210 rejected comments belong to 22 posts that the archive does not have: its ID lookup endpoint returns none of them.
 - **A validator rule was too strict.** The first load rejected 9,203 comments, every one from the `dataengineering-ModTeam` account. Reddit creates a `<subreddit>-ModTeam` account for each community, and its name is longer than the 20-character username limit. The rule now accepts that form, and the reload rejected none.
 - **No authors file exists.** Reddit dumps contain only posts and comments, which is why `--derive-authors` exists.
 
 The download spanned about 18 hours, much of it paused while the laptop slept. The API served 100 records per request, and it answered open-ended queries with HTTP 422 ("Timeout. Maybe slow down a bit") once the history got large. `fetch` therefore pages through 30-day windows, waits at least 10 s after a 422, and resumes from what is already on disk.
+
+### How complete is it?
+
+This snapshot is everything the API returned, not a certified complete copy of the subreddit:
+
+- **The archive has gaps.** Arctic Shift is a third-party archive. Anything it lacks, such as the 22 posts above, cannot be downloaded.
+- **The download predates the current `fetch`.** It used `limit=auto`, had no fixed end time (posts and comments were fetched hours apart, so their cut-offs differ slightly), and had no saturation check. The paging logic it used could skip records only when a single second held at least a full page (100) of them. In the data received, the busiest second holds 7 comments (3 posts) and no ID appears twice, so that skip did not happen here, provided the API returns a full page whenever more records exist. The API documents neither that nor how it orders records that share a second.
+- **Counts were not reconciled against a fixed total.** The 72,558 posts and 635,481 comments exceed the API's subreddit metadata (72,065 and 633,618), but that metadata is a live, cached figure rather than a count for the same time range.
+
+Downloading again with the current `fetch` produces a snapshot with a recorded end time and a `complete` flag.
 
 ## Using real Reddit dumps
 
@@ -213,7 +223,11 @@ If an entity's file is missing, that entity is skipped with a warning. Child rec
 
 Reddit dumps have no authors file. `run --derive-authors` inserts each distinct author name found in the staged posts and comments before the integrity checks, leaving `created_at` and karma `NULL`. Without the flag, named authors are rejected as orphans as before.
 
-To get one subreddit's history, `pipeline fetch --subreddit NAME --out DIR` (or `make fetch SUBREDDIT=NAME`) downloads it from the [Arctic Shift API](https://github.com/ArthurHeitmann/arctic_shift/tree/master/api) into `subreddits.ndjson`, `submissions.ndjson` and `comments.ndjson`, plus a `source.json` summary that compares the counts with the API's own. It waits 1 s between requests, backs off on rate limits and timeouts, and resumes an interrupted download. The API is a free service intended for modest pulls; for large volumes use its monthly dumps. Archive content is user-generated and has no stated license, so check the terms that apply to your use, and keep downloaded data out of version control.
+To get one subreddit's posts and comments, `pipeline fetch --subreddit NAME --out DIR` (or `make fetch SUBREDDIT=NAME`) downloads them from the [Arctic Shift API](https://github.com/ArthurHeitmann/arctic_shift/tree/master/api) into `subreddits.ndjson`, `submissions.ndjson` and `comments.ndjson`. It waits 1 s between requests, backs off on rate limits and timeouts, and resumes an interrupted download.
+
+`source.json` records the snapshot: `snapshot_end` (now, or `--until EPOCH`) is fixed when the download starts and kept on resume, so only records created up to that time are fetched, and a resume with a different end time is refused. When the download finishes, `complete` says whether every record in range could be fetched, and `fetch` exits with status 1 if not.
+
+The API pages only by `created_utc`, in whole seconds, with exclusive `after`/`before` bounds. It has no secondary cursor, and records that share a second come back in a fixed order (the same for ascending and descending sorts), so there is no way to page within a second. `fetch` asks for pages of 100. If one second holds a full page of records, any beyond the first 100 cannot be reached; that second is listed under `saturated_seconds`, and the snapshot is marked incomplete rather than silently missing records. The completeness flag relies on behaviour that was observed but is not documented: results sorted by `created_utc`, and a full page returned whenever more records exist. The API is a free service intended for modest pulls; for large volumes use its monthly dumps. Archive content is user-generated and has no stated license, so check the terms that apply to your use, and keep downloaded data out of version control.
 
 ## Configuration
 
@@ -227,7 +241,7 @@ Database settings come from `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
 | `ETL_PROGRESS_EVERY` | `1000000` | Lines between progress log messages |
 | `ETL_WORK_MEM` / `ETL_MAINTENANCE_WORK_MEM` | `256MB` / `1GB` | Session memory for merges and index builds |
 
-Run options: `run --mode auto|bulk|incremental` (default `auto`) and `--derive-authors`; `generate --scale`, `--defect-rate`, `--seed` and `--compress none|gz|zst`; `fetch --subreddit`, `--out` and `--delay`.
+Run options: `run --mode auto|bulk|incremental` (default `auto`) and `--derive-authors`; `generate --scale`, `--defect-rate`, `--seed` and `--compress none|gz|zst`; `fetch --subreddit`, `--out`, `--delay` and `--until`.
 
 ## Testing
 
@@ -235,13 +249,14 @@ Run options: `run --mode auto|bulk|incremental` (default `auto`) and `--derive-a
 make test
 ```
 
-- **Unit tests** cover every validation rule and rejection reason, reading plain, gzip and zstd files, and the generator's determinism and manifest accuracy. Fetch tests use a fake API to check paging across shared timestamps and empty windows, resuming after a half-written line, and retries on 422, 429, 5xx, timeouts and dropped connections.
+- **Unit tests** cover every validation rule and rejection reason, reading plain, gzip and zstd files, and the generator's determinism and manifest accuracy. Fetch tests use a fake API with the probed paging behaviour to check repeated timestamps across pages, saturated seconds (flagged, never silently skipped), records the API repeats, empty windows and window edges, the snapshot end bound, resuming after a failed request or a half-written line, the snapshot end and saturation surviving a resume, and retries on 422, 429, 5xx, timeouts and dropped connections. A randomized test checks that any record not fetched lies in a second reported as saturated.
 - **Integration tests** run against a separate `reddit_test` database:
   - They generate a dataset with planted defects and check that the pipeline loads exactly the clean records, and that its counts of invalid lines, duplicates and orphans match the generator's manifest exactly.
   - They check that re-running the same input changes no rows and that a newer retrieval updates an existing row.
   - They cover real-dump quirks: prefixed IDs, string timestamps, NUL bytes, deleted authors, invalid UTF-8 and gzip input.
   - They cover failure handling: a second run is refused while one holds the lock, an interrupted run is marked failed, and foreign keys are restored after a failed bulk load.
   - They check that `--derive-authors` loads dumps with no authors file, and that without it named authors are still rejected as orphans.
+  - They interrupt a load at six phase boundaries, with both a raised error and a simulated kill that skips all cleanup, rerun it, and check that the final rows, foreign keys and indexes, load statistics and rejected records match an uninterrupted load.
 
 Unit tests also run without Docker: `pip install -r requirements-dev.txt && pytest`. The integration tests are skipped unless `TEST_DATABASE_URL` is set.
 

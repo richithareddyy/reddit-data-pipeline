@@ -21,7 +21,7 @@ For your own archives, see the [input format](GUIDE.md#using-real-reddit-dumps).
 
 ## Real data
 
-The pipeline has also been run on the complete history of r/dataengineering (February 2015 to November 2026), downloaded from the [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) Reddit archive:
+The pipeline has also been run on real data: every r/dataengineering post and comment that the [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) Reddit archive returned, with timestamps from February 2015 to November 7, 2026:
 
 ```bash
 make fetch SUBREDDIT=dataengineering
@@ -29,6 +29,8 @@ make load-real
 ```
 
 It read 708,040 lines (72,558 posts and 635,481 comments, 1.3 GB) and loaded 707,830 of them in 15.6 seconds, with all 13 quality checks passing. The 210 rejected comments belong to 22 posts that are missing from the archive. The [run report](results/dataengineering.md) has the full numbers.
+
+That download was made before `fetch` had a fixed snapshot end and a completeness check, so it is not certified complete; the [guide](GUIDE.md#how-complete-is-it) sets out what is known. Downloads made now record a snapshot end time and report whether they are complete.
 
 Reddit dumps have no authors file, so `--derive-authors` builds the authors table from the posts and comments; their account creation dates are left unknown. The first real load also exposed a validator bug: Reddit's `<subreddit>-ModTeam` accounts are longer than the 20-character username limit, so 9,203 moderator comments were wrongly rejected until the rule was fixed. The downloaded data is not committed.
 

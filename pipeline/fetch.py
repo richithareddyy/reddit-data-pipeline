@@ -2,6 +2,13 @@
 
 The API is a free service meant for small pulls, so this keeps a delay between
 requests and honours rate limits. For anything large, use the monthly dumps.
+
+The search endpoints only page by `created_utc` (whole seconds, exclusive
+`after`/`before`); there is no secondary cursor, and records that share a
+second come back in a fixed but undocumented order, the same for asc and desc.
+So if one second holds a full page of records, the rest of that second can't
+be reached. That case is detected and the snapshot is marked incomplete
+instead of being skipped silently.
 """
 
 from __future__ import annotations
@@ -14,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,6 +35,8 @@ MAX_ATTEMPTS = 8
 MIN_COMPLETENESS = 0.99
 OVERLOAD_WAIT = 10
 WINDOW_SECONDS = 30 * 86_400
+# Explicit rather than "auto" (anywhere from 100 to 1000), so a full page is recognisable.
+PAGE_LIMIT = 100
 
 
 def _request(endpoint: str, params: dict) -> list[dict]:
@@ -81,44 +91,89 @@ def _resume_point(path: Path) -> tuple[int, int | None, dict[str, int]]:
     return rows, last, _recent(seen, last) if last else {}
 
 
-def fetch_stream(path: Path, endpoint: str, subreddit: str, *, start: int, delay: float,
-                 request: Callable[[str, dict], list[dict]] = _request, until: int | None = None) -> int:
+@dataclass
+class StreamResult:
+    rows: int
+    # Seconds that returned a full page of records already seen: they hold at least PAGE_LIMIT
+    # records, and any beyond the first PAGE_LIMIT could not be fetched.
+    saturated: list[int] = field(default_factory=list)
+
+
+def fetch_stream(path: Path, endpoint: str, subreddit: str, *, start: int, end: int, delay: float,
+                 request: Callable[[str, dict], list[dict]] = _request) -> StreamResult:
+    """Fetch records with start < created_utc <= end, appending to (and resuming from) path."""
     rows, last, seen = _resume_point(path)
-    # Open-ended `after` queries time out on the server once a subreddit has a lot of history,
-    # so every request is bounded to a window. Several records can share a second and a page
-    # can end mid-second, so the cursor steps back a second and already-seen ids are dropped.
-    cursor = last - 1 if last is not None else start
-    until = until or int(time.time())
+    result = StreamResult(rows)
+    # Open-ended queries time out on the server once a subreddit has a lot of history, so each
+    # request covers at most one window. Both bounds are exclusive.
+    cursor = start if last is None else max(start, last - 1)
     pages = 0
     with path.open("ab") as fh:
-        while cursor <= until:
-            params = {"subreddit": subreddit, "sort": "asc", "limit": "auto",
-                      "after": cursor, "before": cursor + WINDOW_SECONDS}
-            page = request(endpoint, params)
-            new = [r for r in page if r["id"] not in seen]
-            if not new:
-                # Window exhausted: move past what this page showed, or to the next window. Both
-                # bounds are exclusive, so windows overlap by a second to keep boundary records.
-                cursor = max((int(r["created_utc"]) for r in page), default=cursor + WINDOW_SECONDS - 1)
-                time.sleep(delay)
-                continue
-            fh.write(b"".join(orjson.dumps(r, option=orjson.OPT_APPEND_NEWLINE) for r in new))
-            fh.flush()
-            rows += len(new)
-            seen.update({r["id"]: int(r["created_utc"]) for r in new})
-            last = max(seen.values())
-            seen = _recent(seen, last)
-            cursor = last - 1
+        while cursor < end:
+            # At least two seconds wide: (cursor, cursor + 1) is empty and would never advance.
+            before = min(cursor + max(WINDOW_SECONDS, 2), end + 1)
+            page = request(endpoint, {"subreddit": subreddit, "sort": "asc", "limit": PAGE_LIMIT,
+                                      "after": cursor, "before": before})
+            new: dict[str, dict] = {}
+            for r in page:  # the API can repeat a record; keep the first copy
+                if r["id"] not in seen and r["id"] not in new:
+                    new[r["id"]] = r
+            if new:
+                fh.write(b"".join(orjson.dumps(r, option=orjson.OPT_APPEND_NEWLINE) for r in new.values()))
+                fh.flush()
+                result.rows += len(new)
+                seen.update({i: int(r["created_utc"]) for i, r in new.items()})
+                last = max(seen.values())
+                seen = _recent(seen, last)
+
+            if len(page) < PAGE_LIMIT:
+                # A short page means nothing else lies between the bounds.
+                cursor = before - 1
+            elif new:
+                # More may follow, possibly in the same second as the last record: step back a
+                # second and let the seen ids filter the overlap.
+                cursor = last - 1
+            else:
+                # The same full page again, so a single second holds at least PAGE_LIMIT records.
+                stuck = max(int(r["created_utc"]) for r in page)
+                result.saturated.append(stuck)
+                log.error("%s: second %d has at least %d records; any beyond those can't be fetched "
+                          "through this API, so the snapshot is incomplete", path.name, stuck, PAGE_LIMIT)
+                cursor = stuck
+
             pages += 1
-            if pages % 50 == 0:
-                log.info("%s: %s rows so far, up to %s", path.name, f"{rows:,}",
+            if pages % 50 == 0 and last is not None:
+                log.info("%s: %s rows so far, up to %s", path.name, f"{result.rows:,}",
                          datetime.fromtimestamp(last, UTC).date())
             time.sleep(delay)
-    return rows
+    return result
 
 
-def fetch_subreddit(subreddit: str, out_dir: Path, *, delay: float = 1.0,
+def _write_state(path: Path, state: dict) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def fetch_subreddit(subreddit: str, out_dir: Path, *, delay: float = 1.0, until: int | None = None,
                     request: Callable[[str, dict], list[dict]] = _request) -> dict:
+    """Download posts and comments created up to a fixed snapshot time.
+
+    source.json records the snapshot end, so a resumed download keeps the same upper bound, and
+    says whether the snapshot is complete.
+    """
+    state_path = out_dir / "source.json"
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    if state:
+        if state.get("subreddit", "").lower() != subreddit.lower():
+            raise ValueError(f"{out_dir} holds r/{state.get('subreddit')}, not r/{subreddit}")
+        if "snapshot_end" not in state:
+            raise ValueError(f"{out_dir} predates snapshot tracking; download into a new directory")
+        if until is not None and until != state["snapshot_end"]:
+            raise ValueError(f"{out_dir} is a snapshot up to {state['snapshot_end']}; "
+                             "download a different end time into a new directory")
+    snapshot_end = state.get("snapshot_end") or until or int(time.time())
+
     matches = request("subreddits/search", {"subreddit_prefix": subreddit, "limit": 100})
     info = next((s for s in matches if s["display_name"].lower() == subreddit.lower()), None)
     if info is None:
@@ -128,21 +183,37 @@ def fetch_subreddit(subreddit: str, out_dir: Path, *, delay: float = 1.0,
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "subreddits.ndjson").write_bytes(orjson.dumps(info, option=orjson.OPT_APPEND_NEWLINE))
-    start = int(info["created_utc"]) - 1  # nothing in a subreddit predates the subreddit
-    posts = fetch_stream(out_dir / "submissions.ndjson", "posts/search", name, start=start,
-                         delay=delay, request=request)
-    comments = fetch_stream(out_dir / "comments.ndjson", "comments/search", name, start=start,
-                            delay=delay, request=request)
-
-    source = {
-        "subreddit": name, "source": API_URL, "fetched_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "posts": posts, "comments": comments,
-        "expected_posts": meta.get("num_posts"), "expected_comments": meta.get("num_comments"),
+    saturated = state.get("saturated_seconds", {"posts": [], "comments": []})
+    state = {
+        "subreddit": name, "source": API_URL, "page_limit": PAGE_LIMIT,
+        "snapshot_end": snapshot_end,
+        "snapshot_end_utc": datetime.fromtimestamp(snapshot_end, UTC).isoformat(timespec="seconds"),
+        "status": "in_progress", "complete": False, "saturated_seconds": saturated,
     }
-    (out_dir / "source.json").write_text(json.dumps(source, indent=2) + "\n")
-    for label, got, expected in (("posts", posts, meta.get("num_posts")),
-                                 ("comments", comments, meta.get("num_comments"))):
-        if expected and got < expected * MIN_COMPLETENESS:
-            log.warning("%s: got %s but the API reports %s", label, f"{got:,}", f"{expected:,}")
-    log.info("Fetched r/%s: %s posts, %s comments", name, f"{posts:,}", f"{comments:,}")
-    return source
+    _write_state(state_path, state)
+
+    start = int(info["created_utc"]) - 1  # nothing in a subreddit predates the subreddit
+    counts = {}
+    for label, filename, endpoint in (("posts", "submissions.ndjson", "posts/search"),
+                                      ("comments", "comments.ndjson", "comments/search")):
+        stream = fetch_stream(out_dir / filename, endpoint, name, start=start, end=snapshot_end,
+                              delay=delay, request=request)
+        counts[label] = stream.rows
+        saturated[label] = sorted(set(saturated[label]) | set(stream.saturated))
+        _write_state(state_path, state)
+
+    complete = not any(saturated.values())
+    state.update({
+        "status": "complete" if complete else "incomplete", "complete": complete,
+        "fetched_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "posts": counts["posts"], "comments": counts["comments"],
+        # Live counts from the API's subreddit metadata, not bounded by snapshot_end.
+        "expected_posts": meta.get("num_posts"), "expected_comments": meta.get("num_comments"),
+    })
+    _write_state(state_path, state)
+    for label, expected in (("posts", meta.get("num_posts")), ("comments", meta.get("num_comments"))):
+        if expected and counts[label] < expected * MIN_COMPLETENESS:
+            log.warning("%s: got %s but the API reports %s", label, f"{counts[label]:,}", f"{expected:,}")
+    log.info("Fetched r/%s up to %s: %s posts, %s comments (%s)", name, state["snapshot_end_utc"],
+             f"{counts['posts']:,}", f"{counts['comments']:,}", state["status"])
+    return state
