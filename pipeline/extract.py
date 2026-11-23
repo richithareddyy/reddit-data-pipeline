@@ -44,7 +44,7 @@ def open_binary(path: Path) -> Iterator[BinaryIO]:
 def iter_lines(path: Path) -> Iterator[tuple[int, bytes]]:
     """Yield (1-based line number, raw line) for every non-blank line."""
     with open_binary(path) as fh:
-        for line_no, line in enumerate(fh, start=1):
-            line = line.strip()
+        for line_no, raw in enumerate(fh, start=1):
+            line = raw.strip()
             if line:
                 yield line_no, line
