@@ -57,16 +57,24 @@ DEFECTS: dict[str, dict[str, str]] = {
     },
 }
 
-_WORDS = (
-    "data python rust linux game music movie book science space history travel food coffee "
-    "garden photo design art code server cloud network security privacy market stock bike "
-    "running soccer chess puzzle robot camera phone laptop keyboard city river mountain ocean "
-    "winter summer weekend project question advice update guide review idea story problem "
-    "solution release version feature bug patch team player season episode trailer recipe "
-    "budget career school college teacher student research paper theory model engine"
-).split()
-_ADJECTIVES = "quick lazy happy brave calm eager fancy jolly kind lucky proud silly witty bold keen".split()
-_NOUNS = "otter falcon badger panda tiger koala raven lynx heron bison moose gecko walrus".split()
+_WORDS = [
+    "data", "python", "rust", "linux", "game", "music", "movie", "book", "science", "space", "history",
+    "travel", "food", "coffee", "garden", "photo", "design", "art", "code", "server", "cloud", "network",
+    "security", "privacy", "market", "stock", "bike", "running", "soccer", "chess", "puzzle", "robot",
+    "camera", "phone", "laptop", "keyboard", "city", "river", "mountain", "ocean", "winter", "summer",
+    "weekend", "project", "question", "advice", "update", "guide", "review", "idea", "story", "problem",
+    "solution", "release", "version", "feature", "bug", "patch", "team", "player", "season", "episode",
+    "trailer", "recipe", "budget", "career", "school", "college", "teacher", "student", "research", "paper",
+    "theory", "model", "engine",
+]
+_ADJECTIVES = [
+    "quick", "lazy", "happy", "brave", "calm", "eager", "fancy", "jolly", "kind", "lucky", "proud", "silly",
+    "witty", "bold", "keen",
+]
+_NOUNS = [
+    "otter", "falcon", "badger", "panda", "tiger", "koala", "raven", "lynx", "heron", "bison", "moose",
+    "gecko", "walrus",
+]
 _OPENERS = ("What is", "How do I", "Why does", "Anyone else", "TIL", "Thoughts on", "Help with",
             "Best way to", "Showcase:", "Question about", "My first", "Update on")
 _DOMAINS = ("i.redd.it", "youtube.com", "github.com", "imgur.com", "nytimes.com", "medium.com", "bbc.co.uk")
