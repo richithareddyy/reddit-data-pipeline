@@ -42,7 +42,8 @@ def ids(path):
 
 
 def stream(path, api, *, start=50, end=200):
-    return fetch.fetch_stream(path, "comments/search", "Example", start=start, end=end, delay=0, request=api)
+    return fetch.fetch_stream(path, "comments/search", "Example", start=start, end=end, delay=0,
+                              request=api)
 
 
 @pytest.fixture
@@ -144,7 +145,8 @@ def test_randomized_paging_never_loses_records_silently(tmp_path, monkeypatch):
 def test_fetch_subreddit_marks_snapshot_complete(tmp_path):
     source = fetch.fetch_subreddit("example", tmp_path, delay=0, until=200,
                                    request=FakeApi(make_rows([60, 61, 120])))
-    assert (source["posts"], source["comments"], source["complete"], source["status"]) == (3, 3, True, "complete")
+    assert (source["posts"], source["comments"]) == (3, 3)
+    assert (source["complete"], source["status"]) == (True, "complete")
     assert source["snapshot_end"] == 200
     assert {p.name for p in tmp_path.iterdir()} == {
         "subreddits.ndjson", "submissions.ndjson", "comments.ndjson", "source.json"}
@@ -162,7 +164,8 @@ def test_fetch_subreddit_marks_saturated_snapshot_incomplete(tmp_path, monkeypat
 def test_resume_keeps_the_original_snapshot_end(tmp_path):
     rows = make_rows([60, 61, 120])
     with pytest.raises(RuntimeError):
-        fetch.fetch_subreddit("example", tmp_path, delay=0, until=150, request=FakeApi(rows, fail_on={3}))
+        fetch.fetch_subreddit("example", tmp_path, delay=0, until=150,
+                              request=FakeApi(rows, fail_on={3}))
     assert json.loads((tmp_path / "source.json").read_text())["status"] == "in_progress"
 
     later = [*rows, {"id": "new", "created_utc": 170}]  # arrived after the snapshot
@@ -188,7 +191,8 @@ def test_saturation_survives_a_resume(tmp_path, monkeypatch):
 def test_resume_refuses_a_different_snapshot_or_untracked_directory(tmp_path):
     fetch.fetch_subreddit("example", tmp_path, delay=0, until=150, request=FakeApi(make_rows([60])))
     with pytest.raises(ValueError, match="snapshot up to 150"):
-        fetch.fetch_subreddit("example", tmp_path, delay=0, until=160, request=FakeApi(make_rows([60])))
+        fetch.fetch_subreddit("example", tmp_path, delay=0, until=160,
+                              request=FakeApi(make_rows([60])))
     (tmp_path / "source.json").write_text(json.dumps({"subreddit": "Example", "posts": 1}))
     with pytest.raises(ValueError, match="predates snapshot tracking"):
         fetch.fetch_subreddit("example", tmp_path, delay=0, request=FakeApi(make_rows([60])))

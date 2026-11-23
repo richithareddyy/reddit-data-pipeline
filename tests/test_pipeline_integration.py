@@ -91,8 +91,9 @@ def test_newer_retrieval_updates_existing_rows(tmp_path, settings):
     outcome = runner.run(settings, tmp_path)
     assert outcome.status == "succeeded"
     with psycopg.connect(TEST_DATABASE_URL) as conn:
-        subscribers = conn.execute("SELECT subscribers FROM reddit.subreddits WHERE subreddit_id = %s",
-                                   (first["id"],)).fetchone()[0]
+        subscribers = conn.execute(
+            "SELECT subscribers FROM reddit.subreddits WHERE subreddit_id = %s",
+            (first["id"],)).fetchone()[0]
     assert subscribers == 999_999
 
 
@@ -109,14 +110,18 @@ def test_pushshift_field_quirks(tmp_path, settings):
 
     write("subreddits", [orjson.dumps({"id": "t5_2qh1i", "display_name": "AskReddit",
                                        "created_utc": "1201233135"})])
-    write("authors", [orjson.dumps({"name": "some_user", "id": "t2_abc", "created_utc": 1_300_000_000})])
-    write("submissions", [orjson.dumps({"id": "t3_p1", "subreddit_id": "t5_2qh1i", "author": "some_user",
-                                        "title": "Hello", "created_utc": 1_600_000_000.0})])
+    write("authors", [orjson.dumps({"name": "some_user", "id": "t2_abc",
+                                    "created_utc": 1_300_000_000})])
+    write("submissions", [orjson.dumps({"id": "t3_p1", "subreddit_id": "t5_2qh1i",
+                                        "author": "some_user", "title": "Hello",
+                                        "created_utc": 1_600_000_000.0})])
     write("comments", [
-        orjson.dumps({"id": "c1", "link_id": "t3_p1", "parent_id": "t3_p1", "subreddit_id": "t5_2qh1i",
-                      "author": "[deleted]", "body": "nul\u0000byte", "created_utc": "1600000100"}),
-        orjson.dumps({"id": "c2", "link_id": "t3_p1", "parent_id": "t1_c1", "subreddit_id": "t5_2qh1i",
-                      "author": "some_user", "body": "emoji \U0001F600", "created_utc": 1_600_000_200}),
+        orjson.dumps({"id": "c1", "link_id": "t3_p1", "parent_id": "t3_p1",
+                      "subreddit_id": "t5_2qh1i", "author": "[deleted]",
+                      "body": "nul\u0000byte", "created_utc": "1600000100"}),
+        orjson.dumps({"id": "c2", "link_id": "t3_p1", "parent_id": "t1_c1",
+                      "subreddit_id": "t5_2qh1i", "author": "some_user",
+                      "body": "emoji \U0001F600", "created_utc": 1_600_000_200}),
         b'{"id": "c3", "link_id": "t3_p1", "body": "lone \\ud800 surrogate"}',
         b'{"id": "c4", "link_id": "t3_p1", "body": "bad \xff bytes"}',
     ])
@@ -192,7 +197,8 @@ def test_derive_authors_loads_dumps_without_an_authors_file(tmp_path, settings):
 
 def test_without_derive_authors_named_authors_are_still_orphans(tmp_path, settings):
     (tmp_path / "subreddits.ndjson").write_bytes(
-        orjson.dumps({"id": "abc", "display_name": "example", "created_utc": 1_300_000_000}) + b"\n")
+        orjson.dumps({"id": "abc", "display_name": "example",
+                      "created_utc": 1_300_000_000}) + b"\n")
     (tmp_path / "submissions.ndjson").write_bytes(orjson.dumps(
         {"id": "p1", "subreddit_id": "t5_abc", "author": "poster", "title": "Hi",
          "created_utc": 1_600_000_000}) + b"\n")

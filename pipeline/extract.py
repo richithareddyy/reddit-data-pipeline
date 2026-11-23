@@ -11,7 +11,8 @@ from typing import BinaryIO
 
 import zstandard
 
-SUFFIXES = (".ndjson", ".jsonl", ".json", ".ndjson.gz", ".jsonl.gz", ".ndjson.zst", ".jsonl.zst", ".zst")
+SUFFIXES = (".ndjson", ".jsonl", ".json", ".ndjson.gz", ".jsonl.gz", ".ndjson.zst", ".jsonl.zst",
+            ".zst")
 
 # Pushshift archives are compressed with long-distance matching and need a 2 GiB window.
 _ZSTD_MAX_WINDOW = 2**31

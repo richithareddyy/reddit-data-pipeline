@@ -32,4 +32,5 @@ def test_generation_is_deterministic(tmp_path):
     a = generate(tmp_path / "a", scale="tiny", seed=3)
     b = generate(tmp_path / "b", scale="tiny", seed=3)
     assert a == b
-    assert (tmp_path / "a" / "comments.ndjson").read_bytes() == (tmp_path / "b" / "comments.ndjson").read_bytes()
+    assert ((tmp_path / "a" / "comments.ndjson").read_bytes()
+            == (tmp_path / "b" / "comments.ndjson").read_bytes())

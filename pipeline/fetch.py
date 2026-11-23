@@ -57,7 +57,8 @@ def _request(endpoint: str, params: dict) -> list[dict]:
                 wait = max(wait, OVERLOAD_WAIT)
             log.warning("HTTP %d from %s, retrying in %ds: %s", exc.code, endpoint, wait,
                         exc.read(200).decode("utf-8", "replace"))
-        # OSError covers URLError, timeouts and connections reset mid-read (e.g. after a laptop sleeps)
+        # OSError covers URLError, timeouts and connections reset mid-read (e.g. after a laptop
+        # sleeps)
         except (OSError, http.client.HTTPException, orjson.JSONDecodeError) as exc:
             log.warning("%s from %s, retrying in %ds", type(exc).__name__, endpoint, wait)
         if attempt < MAX_ATTEMPTS:
@@ -70,7 +71,10 @@ def _recent(seen: dict[str, int], last: int) -> dict[str, int]:
 
 
 def _resume_point(path: Path) -> tuple[int, int | None, dict[str, int]]:
-    """Return (rows kept, newest timestamp, recent id -> timestamp), trimming a half-written line."""
+    """Return (rows kept, newest timestamp, recent id -> timestamp).
+
+    Trims a half-written last line.
+    """
     if not path.exists():
         return 0, None, {}
     rows = valid_bytes = 0
@@ -119,7 +123,8 @@ def fetch_stream(path: Path, endpoint: str, subreddit: str, *, start: int, end: 
                 if r["id"] not in seen and r["id"] not in new:
                     new[r["id"]] = r
             if new:
-                fh.write(b"".join(orjson.dumps(r, option=orjson.OPT_APPEND_NEWLINE) for r in new.values()))
+                fh.write(b"".join(orjson.dumps(r, option=orjson.OPT_APPEND_NEWLINE)
+                                  for r in new.values()))
                 fh.flush()
                 result.rows += len(new)
                 seen.update({i: int(r["created_utc"]) for i, r in new.items()})
@@ -137,8 +142,9 @@ def fetch_stream(path: Path, endpoint: str, subreddit: str, *, start: int, end: 
                 # The same full page again, so a single second holds at least PAGE_LIMIT records.
                 stuck = max(int(r["created_utc"]) for r in page)
                 result.saturated.append(stuck)
-                log.error("%s: second %d has at least %d records; any beyond those can't be fetched "
-                          "through this API, so the snapshot is incomplete", path.name, stuck, PAGE_LIMIT)
+                log.error("%s: second %d has at least %d records; any beyond those can't be "
+                          "fetched through this API, so the snapshot is incomplete",
+                          path.name, stuck, PAGE_LIMIT)
                 cursor = stuck
 
             pages += 1
@@ -182,7 +188,8 @@ def fetch_subreddit(subreddit: str, out_dir: Path, *, delay: float = 1.0, until:
     meta = info.get("_meta", {})
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "subreddits.ndjson").write_bytes(orjson.dumps(info, option=orjson.OPT_APPEND_NEWLINE))
+    (out_dir / "subreddits.ndjson").write_bytes(
+        orjson.dumps(info, option=orjson.OPT_APPEND_NEWLINE))
     saturated = state.get("saturated_seconds", {"posts": [], "comments": []})
     state = {
         "subreddit": name, "source": API_URL, "page_limit": PAGE_LIMIT,
@@ -211,9 +218,11 @@ def fetch_subreddit(subreddit: str, out_dir: Path, *, delay: float = 1.0, until:
         "expected_posts": meta.get("num_posts"), "expected_comments": meta.get("num_comments"),
     })
     _write_state(state_path, state)
-    for label, expected in (("posts", meta.get("num_posts")), ("comments", meta.get("num_comments"))):
+    for label, expected in (("posts", meta.get("num_posts")),
+                            ("comments", meta.get("num_comments"))):
         if expected and counts[label] < expected * MIN_COMPLETENESS:
-            log.warning("%s: got %s but the API reports %s", label, f"{counts[label]:,}", f"{expected:,}")
+            log.warning("%s: got %s but the API reports %s", label, f"{counts[label]:,}",
+                        f"{expected:,}")
     log.info("Fetched r/%s up to %s: %s posts, %s comments (%s)", name, state["snapshot_end_utc"],
              f"{counts['posts']:,}", f"{counts['comments']:,}", state["status"])
     return state

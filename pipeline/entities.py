@@ -40,7 +40,8 @@ SUBMISSIONS = Entity(
     key="submission_id",
     staging_columns=(
         "submission_id", "subreddit_id", "author_name", "title", "selftext", "url", "domain",
-        "score", "num_comments", "over_18", "is_self", "created_utc", "retrieved_utc", "source_line",
+        "score", "num_comments", "over_18", "is_self", "created_utc", "retrieved_utc",
+        "source_line",
     ),
 )
 

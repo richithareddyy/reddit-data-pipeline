@@ -32,8 +32,9 @@ def submission(**overrides):
 
 
 def comment(**overrides):
-    rec = {"id": "c0ffee", "link_id": "t3_abc123", "parent_id": "t3_abc123", "subreddit_id": "t5_2qh1i",
-           "author": "some_user", "body": "Nice post", "score": 1, "controversiality": 0,
+    rec = {"id": "c0ffee", "link_id": "t3_abc123", "parent_id": "t3_abc123",
+           "subreddit_id": "t5_2qh1i", "author": "some_user", "body": "Nice post", "score": 1,
+           "controversiality": 0,
            "created_utc": 1_600_000_100, "retrieved_on": 1_600_100_000}
     rec.update(overrides)
     return rec
@@ -46,7 +47,8 @@ def reason(fn, rec):
 
 
 @pytest.mark.parametrize("entity,factory", [
-    ("subreddits", subreddit), ("authors", author), ("submissions", submission), ("comments", comment),
+    ("subreddits", subreddit), ("authors", author), ("submissions", submission),
+    ("comments", comment),
 ])
 def test_valid_records_match_staging_columns(entity, factory):
     row = V.for_entity(entity)(factory())
@@ -72,7 +74,8 @@ def test_submission_defaults_and_deleted_author():
 
 
 def test_comment_ids_are_normalized():
-    cols = dict(zip(BY_NAME["comments"].record_columns, V.comments(comment(id="t1_c0ffee")), strict=True))
+    cols = dict(zip(BY_NAME["comments"].record_columns,
+                    V.comments(comment(id="t1_c0ffee")), strict=True))
     assert cols["comment_id"] == "c0ffee"
     assert cols["submission_id"] == "abc123"
     assert cols["subreddit_id"] == "2qh1i"
@@ -80,7 +83,8 @@ def test_comment_ids_are_normalized():
 
 
 def test_nul_bytes_are_removed_not_rejected():
-    cols = dict(zip(BY_NAME["comments"].record_columns, V.comments(comment(body="a\x00b")), strict=True))
+    cols = dict(zip(BY_NAME["comments"].record_columns,
+                    V.comments(comment(body="a\x00b")), strict=True))
     assert cols["body"] == "ab"
 
 

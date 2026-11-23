@@ -28,10 +28,14 @@ log = logging.getLogger(__name__)
 
 # Clean record counts per scale. With the default 1% defect rate, "full" emits ~18.9M lines.
 SCALES: dict[str, dict[str, int]] = {
-    "tiny":   {"subreddits": 200,    "authors": 2_000,     "submissions": 5_000,     "comments": 20_000},
-    "small":  {"subreddits": 1_000,  "authors": 18_000,    "submissions": 25_000,    "comments": 145_000},
-    "medium": {"subreddits": 6_000,  "authors": 182_000,   "submissions": 248_000,   "comments": 1_435_000},
-    "full":   {"subreddits": 60_000, "authors": 1_820_000, "submissions": 2_480_000, "comments": 14_350_000},
+    "tiny": {"subreddits": 200, "authors": 2_000,
+             "submissions": 5_000, "comments": 20_000},
+    "small": {"subreddits": 1_000, "authors": 18_000,
+              "submissions": 25_000, "comments": 145_000},
+    "medium": {"subreddits": 6_000, "authors": 182_000,
+               "submissions": 248_000, "comments": 1_435_000},
+    "full": {"subreddits": 60_000, "authors": 1_820_000,
+             "submissions": 2_480_000, "comments": 14_350_000},
 }
 
 # Defect kind -> outcome category expected from the pipeline.
@@ -58,26 +62,28 @@ DEFECTS: dict[str, dict[str, str]] = {
 }
 
 _WORDS = [
-    "data", "python", "rust", "linux", "game", "music", "movie", "book", "science", "space", "history",
-    "travel", "food", "coffee", "garden", "photo", "design", "art", "code", "server", "cloud", "network",
-    "security", "privacy", "market", "stock", "bike", "running", "soccer", "chess", "puzzle", "robot",
-    "camera", "phone", "laptop", "keyboard", "city", "river", "mountain", "ocean", "winter", "summer",
-    "weekend", "project", "question", "advice", "update", "guide", "review", "idea", "story", "problem",
-    "solution", "release", "version", "feature", "bug", "patch", "team", "player", "season", "episode",
-    "trailer", "recipe", "budget", "career", "school", "college", "teacher", "student", "research", "paper",
-    "theory", "model", "engine",
+    "data", "python", "rust", "linux", "game", "music", "movie", "book", "science", "space",
+    "history", "travel", "food", "coffee", "garden", "photo", "design", "art", "code", "server",
+    "cloud", "network", "security", "privacy", "market", "stock", "bike", "running", "soccer",
+    "chess", "puzzle", "robot", "camera", "phone", "laptop", "keyboard", "city", "river",
+    "mountain", "ocean", "winter", "summer", "weekend", "project", "question", "advice", "update",
+    "guide", "review", "idea", "story", "problem", "solution", "release", "version", "feature",
+    "bug", "patch", "team", "player", "season", "episode", "trailer", "recipe", "budget",
+    "career", "school", "college", "teacher", "student", "research", "paper", "theory", "model",
+    "engine",
 ]
 _ADJECTIVES = [
-    "quick", "lazy", "happy", "brave", "calm", "eager", "fancy", "jolly", "kind", "lucky", "proud", "silly",
-    "witty", "bold", "keen",
+    "quick", "lazy", "happy", "brave", "calm", "eager", "fancy", "jolly", "kind", "lucky",
+    "proud", "silly", "witty", "bold", "keen",
 ]
 _NOUNS = [
-    "otter", "falcon", "badger", "panda", "tiger", "koala", "raven", "lynx", "heron", "bison", "moose",
-    "gecko", "walrus",
+    "otter", "falcon", "badger", "panda", "tiger", "koala", "raven", "lynx", "heron", "bison",
+    "moose", "gecko", "walrus",
 ]
 _OPENERS = ("What is", "How do I", "Why does", "Anyone else", "TIL", "Thoughts on", "Help with",
             "Best way to", "Showcase:", "Question about", "My first", "Update on")
-_DOMAINS = ("i.redd.it", "youtube.com", "github.com", "imgur.com", "nytimes.com", "medium.com", "bbc.co.uk")
+_DOMAINS = ("i.redd.it", "youtube.com", "github.com", "imgur.com", "nytimes.com", "medium.com",
+            "bbc.co.uk")
 _TYPES = ("public", "public", "public", "restricted", "private")
 
 _EPOCH_2008, _EPOCH_2016, _EPOCH_2024 = 1_199_145_600, 1_451_606_400, 1_704_067_200
@@ -286,7 +292,8 @@ class Generator:
     def comments(self, out: _Writer) -> None:
         rng = self.rng
         n_submissions = len(self.sub_created)
-        last_comment = array("q", bytes(8 * n_submissions))  # latest comment index + 1, per submission
+        # latest comment index + 1, per submission
+        last_comment = array("q", bytes(8 * n_submissions))
         for i in range(self.counts["comments"]):
             s = self._skewed(n_submissions, 1.8)
             link_id = f"t3_{base36(36**6 + s)}"
@@ -297,7 +304,8 @@ class Generator:
                 "id": base36(36**7 + i), "link_id": link_id, "parent_id": parent,
                 "subreddit_id": f"t5_{self.subreddit_ids[self.sub_subreddit[s]]}",
                 "author": self._author(0.12), "body": self._text(1, 3),
-                "score": int(rng.paretovariate(1.5)) - 1, "controversiality": int(rng.random() < 0.02),
+                "score": int(rng.paretovariate(1.5)) - 1,
+                "controversiality": int(rng.random() < 0.02),
                 "created_utc": created, "retrieved_on": created + rng.randint(3_600, 86_400 * 3),
             }
             last_comment[s] = i + 1
@@ -311,7 +319,8 @@ def generate(out_dir: Path, scale: str = "small", defect_rate: float = 0.01, see
     out_dir.mkdir(parents=True, exist_ok=True)
     suffix = {"none": ".ndjson", "gz": ".ndjson.gz", "zst": ".ndjson.zst"}[compress]
     gen = Generator(counts, defect_rate, seed)
-    manifest: dict[str, Any] = {"scale": scale, "seed": seed, "defect_rate": defect_rate, "entities": {}}
+    manifest: dict[str, Any] = {"scale": scale, "seed": seed, "defect_rate": defect_rate,
+                                "entities": {}}
 
     started = time.perf_counter()
     for entity in ("subreddits", "authors", "submissions", "comments"):
@@ -323,7 +332,8 @@ def generate(out_dir: Path, scale: str = "small", defect_rate: float = 0.01, see
             writer = _Writer(fh, entity)
             getattr(gen, entity)(writer)
         manifest["entities"][entity] = writer.manifest(path.name)
-        log.info("Wrote %s lines to %s in %.1fs", f"{writer.lines:,}", path, time.perf_counter() - t0)
+        log.info("Wrote %s lines to %s in %.1fs", f"{writer.lines:,}", path,
+                 time.perf_counter() - t0)
 
     total = sum(e["lines"] for e in manifest["entities"].values())
     manifest["total_lines"] = total

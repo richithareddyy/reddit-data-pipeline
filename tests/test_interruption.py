@@ -42,24 +42,30 @@ def _snapshot():
             for t in TABLES
         }
         fks = conn.execute(
-            "SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND convalidated AND conname = ANY(%s)",
+            "SELECT count(*) FROM pg_constraint"
+            " WHERE contype = 'f' AND convalidated AND conname = ANY(%s)",
             ([name for _, name, _ in constraints.FOREIGN_KEYS],)).fetchone()[0]
-        indexes = sum(conn.execute("SELECT to_regclass(%s) IS NOT NULL", (f"reddit.{name}",)).fetchone()[0]
-                      for name, _ in constraints.INDEXES)
+        indexes = sum(
+            conn.execute("SELECT to_regclass(%s) IS NOT NULL", (f"reddit.{name}",)).fetchone()[0]
+            for name, _ in constraints.INDEXES)
         run_id, status = conn.execute(
             "SELECT run_id, status FROM etl.pipeline_runs ORDER BY run_id DESC LIMIT 1").fetchone()
         stats = conn.execute(
             "SELECT entity, records_read, records_rejected_validation, records_staged, duplicates,"
-            " records_rejected_integrity, records_accepted FROM etl.load_stats WHERE run_id = %s ORDER BY entity",
+            " records_rejected_integrity, records_accepted FROM etl.load_stats"
+            " WHERE run_id = %s ORDER BY entity",
             (run_id,)).fetchall()
         rejects = conn.execute(
-            "SELECT entity, source_line, reason FROM etl.rejected_records WHERE run_id = %s ORDER BY 1, 2, 3",
+            "SELECT entity, source_line, reason FROM etl.rejected_records"
+            " WHERE run_id = %s ORDER BY 1, 2, 3",
             (run_id,)).fetchall()
         # Rows written across every run, failed ones included, must add up to one clean load.
         upserted = conn.execute(
-            "SELECT entity, sum(records_upserted) FROM etl.load_stats GROUP BY entity ORDER BY entity").fetchall()
+            "SELECT entity, sum(records_upserted) FROM etl.load_stats"
+            " GROUP BY entity ORDER BY entity").fetchall()
         checks_failed = conn.execute(
-            "SELECT count(*) FROM etl.quality_results WHERE run_id = %s AND NOT passed", (run_id,)).fetchone()[0]
+            "SELECT count(*) FROM etl.quality_results WHERE run_id = %s AND NOT passed",
+            (run_id,)).fetchone()[0]
         leftover_running = conn.execute(
             "SELECT count(*) FROM etl.pipeline_runs WHERE status = 'running'").fetchone()[0]
     return {"core": core, "fks": fks, "indexes": indexes, "status": status, "stats": stats,
@@ -93,8 +99,10 @@ BOUNDARIES = [
     ("after merging submissions, before staging comments", load, "stage", _entity("comments"), 0),
     ("after staging comments, before merging them", load, "merge", _entity("comments"), 0),
     # the first ensure() call is apply_schema at start-up; the second rebuilds after the merges
-    ("after all merges, before rebuilding constraints", constraints, "ensure", lambda *a, **k: True, 1),
-    ("after rebuilding constraints, before quality checks", quality, "run_checks", lambda *a, **k: True, 0),
+    ("after all merges, before rebuilding constraints",
+     constraints, "ensure", lambda *a, **k: True, 1),
+    ("after rebuilding constraints, before quality checks",
+     quality, "run_checks", lambda *a, **k: True, 0),
 ]
 
 
@@ -114,7 +122,8 @@ def baseline(dataset):
 
 
 @pytest.mark.parametrize("kind", ["error", "kill"])
-@pytest.mark.parametrize("boundary, module, function, when, skip", BOUNDARIES, ids=[b[0] for b in BOUNDARIES])
+@pytest.mark.parametrize("boundary, module, function, when, skip", BOUNDARIES,
+                         ids=[b[0] for b in BOUNDARIES])
 def test_interrupted_load_converges_to_the_uninterrupted_result(
         dataset, baseline, monkeypatch, kind, boundary, module, function, when, skip):
     _reset()
@@ -131,7 +140,8 @@ def test_interrupted_load_converges_to_the_uninterrupted_result(
     after = _snapshot()
 
     assert after["core"] == baseline["core"]
-    assert (after["fks"], after["indexes"]) == (len(constraints.FOREIGN_KEYS), len(constraints.INDEXES))
+    assert after["fks"] == len(constraints.FOREIGN_KEYS)
+    assert after["indexes"] == len(constraints.INDEXES)
     assert after["stats"] == baseline["stats"]
     assert after["rejects"] == baseline["rejects"]
     assert after["upserted"] == baseline["upserted"]

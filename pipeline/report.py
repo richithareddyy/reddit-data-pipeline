@@ -11,11 +11,14 @@ from pipeline.config import Settings
 
 def _table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
     cells = [[_cell(v) for v in row] for row in rows]
-    widths = [max(len(h), *(len(r[i]) for r in cells)) if cells else len(h) for i, h in enumerate(headers)]
-    numeric = [all(isinstance(row[i], (int, float)) or row[i] is None for row in rows) for i in range(len(headers))]
+    widths = [max(len(h), *(len(r[i]) for r in cells)) if cells else len(h)
+              for i, h in enumerate(headers)]
+    numeric = [all(isinstance(row[i], (int, float)) or row[i] is None for row in rows)
+               for i in range(len(headers))]
 
     def fmt(values: Sequence[str]) -> str:
-        padded = (v.rjust(w) if n else v.ljust(w) for v, w, n in zip(values, widths, numeric, strict=True))
+        padded = (v.rjust(w) if n else v.ljust(w)
+                  for v, w, n in zip(values, widths, numeric, strict=True))
         return "  ".join(padded).rstrip()
 
     lines = [fmt(headers), "  ".join("-" * w for w in widths)]
@@ -55,7 +58,8 @@ def render(settings: Settings, run_id: int | None = None) -> str:
                       records_rejected_integrity, records_accepted, records_upserted,
                       (extract_seconds + merge_seconds)::float
                FROM etl.load_stats WHERE run_id = %s
-               ORDER BY array_position(ARRAY['subreddits','authors','submissions','comments'], entity)""",
+               ORDER BY array_position(
+                   ARRAY['subreddits','authors','submissions','comments'], entity)""",
             (run_id,)).fetchall()
 
         reasons = conn.execute(
@@ -70,7 +74,8 @@ def render(settings: Settings, run_id: int | None = None) -> str:
     _, status, mode, data_dir, started, _finished, seconds, error = run
     out = [
         f"Run {run_id}: {status} ({mode} load from {data_dir})",
-        f"Started {started:%Y-%m-%d %H:%M:%S %Z}" + (f", took {float(seconds):,.1f}s" if seconds else ""),
+        f"Started {started:%Y-%m-%d %H:%M:%S %Z}"
+        + (f", took {float(seconds):,.1f}s" if seconds else ""),
     ]
     if error:
         out.append(f"Error: {error}")
@@ -80,7 +85,8 @@ def render(settings: Settings, run_id: int | None = None) -> str:
         total_seconds = sum(r[7] for r in stats)
         rows = [list(r) for r in stats] + [["total", *totals, total_seconds]]
         out += ["", "Load statistics", _table(
-            ["entity", "read", "invalid", "duplicates", "orphaned", "accepted", "upserted", "seconds"], rows)]
+            ["entity", "read", "invalid", "duplicates", "orphaned", "accepted", "upserted",
+             "seconds"], rows)]
         if total_seconds:
             out.append(f"Throughput: {totals[0] / total_seconds:,.0f} lines/s")
 
@@ -88,6 +94,7 @@ def render(settings: Settings, run_id: int | None = None) -> str:
         out += ["", "Rejections by reason", _table(["entity", "reason", "count"], reasons)]
 
     if checks:
-        out += ["", "Quality checks", _table(["check", "severity", "result", "observed", "threshold"], checks)]
+        out += ["", "Quality checks", _table(
+            ["check", "severity", "result", "observed", "threshold"], checks)]
 
     return "\n".join(out)

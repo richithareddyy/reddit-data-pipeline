@@ -56,7 +56,8 @@ def _csv_writer(buffer: io.TextIOBase) -> csv.writer:
 
 
 def _raw_text(raw: bytes) -> str:
-    return raw[: RAW_RECORD_MAX_CHARS * 4].decode("utf-8", "replace").replace("\x00", "")[:RAW_RECORD_MAX_CHARS]
+    text = raw[: RAW_RECORD_MAX_CHARS * 4].decode("utf-8", "replace")
+    return text.replace("\x00", "")[:RAW_RECORD_MAX_CHARS]
 
 
 def stage(conn: psycopg.Connection, entity: Entity, path: Path, run_id: int,
@@ -71,12 +72,14 @@ def stage(conn: psycopg.Connection, entity: Entity, path: Path, run_id: int,
 
     columns = ", ".join(entity.staging_columns)
     with (
-        tempfile.SpooledTemporaryFile(max_size=64 << 20, mode="w+", newline="", encoding="utf-8") as rejects,
+        tempfile.SpooledTemporaryFile(max_size=64 << 20, mode="w+", newline="",
+                                      encoding="utf-8") as rejects,
         conn.cursor() as cur,
     ):
         reject_writer = _csv_writer(rejects)
         cur.execute(f"TRUNCATE staging.{entity.name}")
-        with cur.copy(f"COPY staging.{entity.name} ({columns}) FROM STDIN WITH (FORMAT csv)") as copy:
+        with cur.copy(f"COPY staging.{entity.name} ({columns})"
+                      " FROM STDIN WITH (FORMAT csv)") as copy:
             for line_no, raw in iter_lines(path):
                 result.records_read += 1
                 if result.records_read % progress_every == 0:
@@ -117,8 +120,9 @@ def stage(conn: psycopg.Connection, entity: Entity, path: Path, run_id: int,
     conn.commit()
 
     result.seconds = time.perf_counter() - started
-    log.info("%s: staged %s of %s lines (%s invalid) in %.1fs", entity.name, f"{result.records_staged:,}",
-             f"{result.records_read:,}", f"{result.records_rejected_validation:,}", result.seconds)
+    log.info("%s: staged %s of %s lines (%s invalid) in %.1fs", entity.name,
+             f"{result.records_staged:,}", f"{result.records_read:,}",
+             f"{result.records_rejected_validation:,}", result.seconds)
     return result
 
 
@@ -133,7 +137,8 @@ class MergeSpec:
 
 
 def _core_columns(columns: tuple[str, ...]) -> dict[str, str]:
-    mapped = {c: f"s.{c}" for c in columns if c not in ("created_utc", "retrieved_utc", "source_line")}
+    mapped = {c: f"s.{c}" for c in columns
+              if c not in ("created_utc", "retrieved_utc", "source_line")}
     mapped["created_at"] = "to_timestamp(s.created_utc)"
     mapped["retrieved_at"] = "to_timestamp(s.retrieved_utc)"
     return mapped
@@ -204,8 +209,10 @@ def merge(conn: psycopg.Connection, entity: Entity, run_id: int, staged: int, *,
                        CASE WHEN d.rn > 1 THEN 'duplicate' ELSE {spec.reject_reason} END AS reason
                 FROM (
                     SELECT {key}, source_line{ref_columns},
-                           row_number() OVER (PARTITION BY {key}
-                                              ORDER BY retrieved_utc DESC NULLS LAST, source_line DESC) AS rn
+                           row_number() OVER (
+                               PARTITION BY {key}
+                               ORDER BY retrieved_utc DESC NULLS LAST, source_line DESC
+                           ) AS rn
                     FROM staging.{table}
                 ) d
                 {spec.reject_joins}
@@ -249,7 +256,9 @@ def merge(conn: psycopg.Connection, entity: Entity, run_id: int, staged: int, *,
     conn.commit()
 
     result.seconds = time.perf_counter() - started
-    log.info("%s: merged in %.1fs - %s duplicates, %s integrity rejects, %s accepted, %s inserted/updated",
-             entity.name, result.seconds, f"{result.duplicates:,}", f"{result.records_rejected_integrity:,}",
-             f"{result.records_accepted:,}", f"{result.records_upserted:,}")
+    log.info("%s: merged in %.1fs - %s duplicates, %s integrity rejects, %s accepted, "
+             "%s inserted/updated",
+             entity.name, result.seconds, f"{result.duplicates:,}",
+             f"{result.records_rejected_integrity:,}", f"{result.records_accepted:,}",
+             f"{result.records_upserted:,}")
     return result

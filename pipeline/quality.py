@@ -42,11 +42,13 @@ def build_checks(settings: Settings) -> list[Check]:
     return [
         Check(
             "load_reconciliation", "error",
-            "Entities where read != staged + invalid, or staged != duplicates + orphaned + accepted",
+            "Entities where read != staged + invalid, "
+            "or staged != duplicates + orphaned + accepted",
             """SELECT count(*) FROM etl.load_stats
                WHERE run_id = %(run_id)s
                  AND (records_read <> records_staged + records_rejected_validation
-                      OR records_staged <> duplicates + records_rejected_integrity + records_accepted)""",
+                      OR records_staged
+                         <> duplicates + records_rejected_integrity + records_accepted)""",
         ),
         Check(
             "core_row_coverage", "error",
@@ -61,8 +63,9 @@ def build_checks(settings: Settings) -> list[Check]:
         Check(
             "rejection_rate", "error",
             "Share of input lines rejected by validation or referential checks",
-            """SELECT COALESCE(sum(records_rejected_validation + records_rejected_integrity)::numeric
-                               / NULLIF(sum(records_read), 0), 0)
+            """SELECT COALESCE(
+                   sum(records_rejected_validation + records_rejected_integrity)::numeric
+                   / NULLIF(sum(records_read), 0), 0)
                FROM etl.load_stats WHERE run_id = %(run_id)s""",
             settings.max_reject_rate,
         ),
@@ -78,17 +81,21 @@ def build_checks(settings: Settings) -> list[Check]:
             "orphan_submissions", "error",
             "Submissions whose subreddit or author is missing",
             """SELECT count(*) FROM reddit.submissions s
-               WHERE NOT EXISTS (SELECT 1 FROM reddit.subreddits r WHERE r.subreddit_id = s.subreddit_id)
+               WHERE NOT EXISTS (SELECT 1 FROM reddit.subreddits r
+                                 WHERE r.subreddit_id = s.subreddit_id)
                   OR (s.author_name IS NOT NULL
-                      AND NOT EXISTS (SELECT 1 FROM reddit.authors a WHERE a.author_name = s.author_name))""",
+                      AND NOT EXISTS (SELECT 1 FROM reddit.authors a
+                                      WHERE a.author_name = s.author_name))""",
         ),
         Check(
             "orphan_comments", "error",
             "Comments whose submission or author is missing",
             """SELECT count(*) FROM reddit.comments c
-               WHERE NOT EXISTS (SELECT 1 FROM reddit.submissions s WHERE s.submission_id = c.submission_id)
+               WHERE NOT EXISTS (SELECT 1 FROM reddit.submissions s
+                                 WHERE s.submission_id = c.submission_id)
                   OR (c.author_name IS NOT NULL
-                      AND NOT EXISTS (SELECT 1 FROM reddit.authors a WHERE a.author_name = c.author_name))""",
+                      AND NOT EXISTS (SELECT 1 FROM reddit.authors a
+                                      WHERE a.author_name = c.author_name))""",
         ),
         Check(
             "comment_subreddit_mismatch", "error",
@@ -100,10 +107,14 @@ def build_checks(settings: Settings) -> list[Check]:
         Check(
             "future_timestamps", "error",
             "Rows created more than one day in the future",
-            """SELECT (SELECT count(*) FROM reddit.subreddits  WHERE created_at > now() + interval '1 day')
-                    + (SELECT count(*) FROM reddit.authors     WHERE created_at > now() + interval '1 day')
-                    + (SELECT count(*) FROM reddit.submissions WHERE created_at > now() + interval '1 day')
-                    + (SELECT count(*) FROM reddit.comments    WHERE created_at > now() + interval '1 day')""",
+            """SELECT (SELECT count(*) FROM reddit.subreddits
+                       WHERE created_at > now() + interval '1 day')
+                    + (SELECT count(*) FROM reddit.authors
+                       WHERE created_at > now() + interval '1 day')
+                    + (SELECT count(*) FROM reddit.submissions
+                       WHERE created_at > now() + interval '1 day')
+                    + (SELECT count(*) FROM reddit.comments
+                       WHERE created_at > now() + interval '1 day')""",
         ),
         Check(
             "blank_submission_titles", "error",
@@ -135,7 +146,8 @@ def build_checks(settings: Settings) -> list[Check]:
         Check(
             "deleted_comment_author_rate", "warning",
             "Share of comments whose author is deleted or unknown",
-            "SELECT COALESCE(avg(CASE WHEN author_name IS NULL THEN 1 ELSE 0 END), 0) FROM reddit.comments",
+            "SELECT COALESCE(avg(CASE WHEN author_name IS NULL THEN 1 ELSE 0 END), 0) "
+            "FROM reddit.comments",
             0.5,
         ),
     ]
@@ -154,7 +166,8 @@ def run_checks(conn: psycopg.Connection, run_id: int, settings: Settings) -> lis
                 "INSERT INTO etl.quality_results"
                 " (run_id, check_name, severity, passed, observed, threshold, description)"
                 " VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (run_id, check.name, check.severity, result.passed, observed, check.threshold, check.description),
+                (run_id, check.name, check.severity, result.passed, observed, check.threshold,
+                 check.description),
             )
             level = logging.INFO if result.passed else (
                 logging.ERROR if check.severity == "error" else logging.WARNING)

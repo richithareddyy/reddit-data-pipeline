@@ -17,9 +17,11 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     gen = sub.add_parser("generate", help="write synthetic Pushshift-style dump files")
-    gen.add_argument("--out", type=Path, default=Path("data"), help="output directory (default: data)")
+    gen.add_argument("--out", type=Path, default=Path("data"),
+                     help="output directory (default: data)")
     gen.add_argument("--scale", choices=sorted(generate.SCALES), default="small")
-    gen.add_argument("--defect-rate", type=float, default=0.01, help="share of extra defective lines")
+    gen.add_argument("--defect-rate", type=float, default=0.01,
+                     help="share of extra defective lines")
     gen.add_argument("--seed", type=int, default=42)
     gen.add_argument("--compress", choices=("none", "gz", "zst"), default="none")
 
@@ -27,12 +29,14 @@ def _parser() -> argparse.ArgumentParser:
     get.add_argument("--subreddit", required=True)
     get.add_argument("--out", type=Path, required=True, help="output directory; reruns resume")
     get.add_argument("--delay", type=float, default=1.0, help="seconds between requests")
-    get.add_argument("--until", type=int, help="snapshot end as epoch seconds (default: now, kept on resume)")
+    get.add_argument("--until", type=int,
+                     help="snapshot end as epoch seconds (default: now, kept on resume)")
 
     sub.add_parser("init-db", help="create schemas, tables, indexes and foreign keys")
 
     run = sub.add_parser("run", help="run the full extract-validate-load-check pipeline")
-    run.add_argument("--data-dir", type=Path, default=Path("data"), help="directory with dump files")
+    run.add_argument("--data-dir", type=Path, default=Path("data"),
+                     help="directory with dump files")
     run.add_argument("--mode", choices=("auto", "bulk", "incremental"), default="auto",
                      help="bulk drops FKs/indexes during load and rebuilds them after; "
                           "auto picks bulk when the core tables are empty")
@@ -62,7 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "fetch":
         source = fetch.fetch_subreddit(args.subreddit, args.out, delay=args.delay, until=args.until)
         if not source["complete"]:
-            log.error("Snapshot is incomplete; see saturated_seconds in %s", args.out / "source.json")
+            log.error("Snapshot is incomplete; see saturated_seconds in %s",
+                      args.out / "source.json")
             return 1
         return 0
 

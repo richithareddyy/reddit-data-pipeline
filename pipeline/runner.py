@@ -32,7 +32,8 @@ class RunOutcome:
     quality: list[quality.CheckResult]
 
 
-def run(settings: Settings, data_dir: Path, mode: str = "auto", derive_authors: bool = False) -> RunOutcome:
+def run(settings: Settings, data_dir: Path, mode: str = "auto",
+        derive_authors: bool = False) -> RunOutcome:
     sources = {e.name: find_source(data_dir, e.name) for e in LOAD_ORDER}
     if derive_authors and sources["authors"]:
         log.warning("Ignoring --derive-authors: %s exists", sources["authors"].name)
@@ -40,13 +41,15 @@ def run(settings: Settings, data_dir: Path, mode: str = "auto", derive_authors: 
     if not any(sources.values()):
         raise FileNotFoundError(
             f"No input files found in {data_dir}. Expected files such as "
-            "subreddits.ndjson, authors.ndjson, submissions.ndjson, comments.ndjson (optionally .gz or .zst)."
+            "subreddits.ndjson, authors.ndjson, submissions.ndjson, comments.ndjson "
+            "(optionally .gz or .zst)."
         )
 
     with db.connect(settings) as conn:
         # Staging tables and dropped constraints are shared state, so only one run may proceed.
         if not db.try_acquire_run_lock(conn):
-            raise RunInProgressError("Another pipeline run holds the run lock; try again when it finishes.")
+            raise RunInProgressError(
+                "Another pipeline run holds the run lock; try again when it finishes.")
         db.apply_schema(conn)
         _fail_interrupted_runs(conn)
         db.configure_bulk_session(conn, settings)
@@ -94,8 +97,9 @@ def run(settings: Settings, data_dir: Path, mode: str = "auto", derive_authors: 
         status = "quality_failed" if failed else "succeeded"
         _finish_run(conn, run_id, status)
         seconds = time.perf_counter() - started
-        log.info("Run %d %s in %.1fs: %s lines read, %s accepted (%s lines/s)", run_id, status, seconds,
-                 f"{lines_read:,}", f"{accepted:,}", f"{lines_read / max(seconds, 1e-9):,.0f}")
+        log.info("Run %d %s in %.1fs: %s lines read, %s accepted (%s lines/s)", run_id, status,
+                 seconds, f"{lines_read:,}", f"{accepted:,}",
+                 f"{lines_read / max(seconds, 1e-9):,.0f}")
         return RunOutcome(run_id, status, seconds, lines_read, accepted, results)
 
 
@@ -137,9 +141,11 @@ def _start_run(conn: psycopg.Connection, data_dir: Path, mode: str) -> int:
     return run_id
 
 
-def _finish_run(conn: psycopg.Connection, run_id: int, status: str, error: str | None = None) -> None:
+def _finish_run(conn: psycopg.Connection, run_id: int, status: str,
+                error: str | None = None) -> None:
     conn.execute(
-        "UPDATE etl.pipeline_runs SET status = %s, finished_at = now(), error = %s WHERE run_id = %s",
+        "UPDATE etl.pipeline_runs SET status = %s, finished_at = now(), error = %s"
+        " WHERE run_id = %s",
         (status, error, run_id),
     )
     conn.commit()
@@ -149,13 +155,14 @@ def _record_stats(conn: psycopg.Connection, run_id: int, entity: str, path: Path
                   staged: load.StageResult, merged: load.MergeResult) -> None:
     conn.execute(
         """INSERT INTO etl.load_stats (
-               run_id, entity, source_file, records_read, records_rejected_validation, records_staged,
-               duplicates, records_rejected_integrity, records_accepted, records_upserted,
-               extract_seconds, merge_seconds)
+               run_id, entity, source_file, records_read, records_rejected_validation,
+               records_staged, duplicates, records_rejected_integrity, records_accepted,
+               records_upserted, extract_seconds, merge_seconds)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         (run_id, entity, path.name, staged.records_read, staged.records_rejected_validation,
          staged.records_staged, merged.duplicates, merged.records_rejected_integrity,
-         merged.records_accepted, merged.records_upserted, round(staged.seconds, 3), round(merged.seconds, 3)),
+         merged.records_accepted, merged.records_upserted, round(staged.seconds, 3),
+         round(merged.seconds, 3)),
     )
     conn.commit()
 
@@ -163,9 +170,9 @@ def _record_stats(conn: psycopg.Connection, run_id: int, entity: str, path: Path
 def _record_derived_authors(conn: psycopg.Connection, run_id: int, derived: int) -> None:
     conn.execute(
         """INSERT INTO etl.load_stats (
-               run_id, entity, source_file, records_read, records_rejected_validation, records_staged,
-               duplicates, records_rejected_integrity, records_accepted, records_upserted,
-               extract_seconds, merge_seconds)
+               run_id, entity, source_file, records_read, records_rejected_validation,
+               records_staged, duplicates, records_rejected_integrity, records_accepted,
+               records_upserted, extract_seconds, merge_seconds)
            VALUES (%s, 'authors', '(derived)', 0, 0, 0, 0, 0, 0, %s, 0, 0)""",
         (run_id, derived),
     )
