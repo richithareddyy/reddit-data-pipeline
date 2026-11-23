@@ -165,7 +165,7 @@ def test_resume_keeps_the_original_snapshot_end(tmp_path):
         fetch.fetch_subreddit("example", tmp_path, delay=0, until=150, request=FakeApi(rows, fail_on={3}))
     assert json.loads((tmp_path / "source.json").read_text())["status"] == "in_progress"
 
-    later = rows + [{"id": "new", "created_utc": 170}]  # arrived after the snapshot
+    later = [*rows, {"id": "new", "created_utc": 170}]  # arrived after the snapshot
     source = fetch.fetch_subreddit("example", tmp_path, delay=0, request=FakeApi(later))
     assert source["snapshot_end"] == 150 and source["complete"]
     assert ids(tmp_path / "comments.ndjson") == ["r0", "r1", "r2"]
