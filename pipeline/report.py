@@ -67,7 +67,7 @@ def render(settings: Settings, run_id: int | None = None) -> str:
                FROM etl.quality_results WHERE run_id = %s ORDER BY severity, check_name""",
             (run_id,)).fetchall()
 
-    _, status, mode, data_dir, started, finished, seconds, error = run
+    _, status, mode, data_dir, started, _finished, seconds, error = run
     out = [
         f"Run {run_id}: {status} ({mode} load from {data_dir})",
         f"Started {started:%Y-%m-%d %H:%M:%S %Z}" + (f", took {float(seconds):,.1f}s" if seconds else ""),
