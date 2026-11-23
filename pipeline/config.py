@@ -28,10 +28,10 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         database_url=os.environ.get("DATABASE_URL") or _default_database_url(),
-        copy_batch_rows=int(os.environ.get("ETL_COPY_BATCH_ROWS", 50_000)),
-        progress_every=int(os.environ.get("ETL_PROGRESS_EVERY", 1_000_000)),
-        max_reject_rate=float(os.environ.get("ETL_MAX_REJECT_RATE", 0.05)),
-        max_orphan_parent_rate=float(os.environ.get("ETL_MAX_ORPHAN_PARENT_RATE", 0.05)),
+        copy_batch_rows=int(os.environ.get("ETL_COPY_BATCH_ROWS", "50000")),
+        progress_every=int(os.environ.get("ETL_PROGRESS_EVERY", "1000000")),
+        max_reject_rate=float(os.environ.get("ETL_MAX_REJECT_RATE", "0.05")),
+        max_orphan_parent_rate=float(os.environ.get("ETL_MAX_ORPHAN_PARENT_RATE", "0.05")),
         work_mem=os.environ.get("ETL_WORK_MEM", "256MB"),
         maintenance_work_mem=os.environ.get("ETL_MAINTENANCE_WORK_MEM", "1GB"),
     )
