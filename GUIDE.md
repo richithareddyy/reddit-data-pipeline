@@ -12,7 +12,7 @@ The problem is making repeated archive loads both inspectable and safe to rerun:
 | --- | --- | --- |
 | Newline-delimited JSON, plain or compressed with gzip/Zstandard | Validation, staging, deduplication, and upserts | Relational tables, rejected-record reports, and 13 data-quality checks |
 
-**Benchmark scope:** The reported 18.9-million-line benchmark uses generated data with deliberately injected defects. It demonstrates the pipeline on a reproducible test dataset; runtime depends on hardware and input characteristics. A separate [real-data run](#real-data-run) loads the full r/dataengineering archive (708,040 lines).
+**Benchmark scope:** The reported 18.9-million-line benchmark uses generated data with deliberately injected defects. It demonstrates the pipeline on a reproducible test dataset; runtime depends on hardware and input characteristics. A separate [real-data run](#real-data-run) loads an r/dataengineering download (708,040 lines).
 
 ## Contents
 
@@ -84,7 +84,7 @@ The CLI can also be called directly: `docker compose run --rm pipeline --help`.
 | Schema | Table | Purpose |
 | --- | --- | --- |
 | `reddit` | `subreddits` | Communities, keyed by base-36 id |
-| `reddit` | `authors` | User accounts, keyed by username (`created_at` is unknown for derived authors) |
+| `reddit` | `authors` | User accounts, keyed by username (`author_id`, karma and `created_at` are unknown for derived authors) |
 | `reddit` | `submissions` | Posts → `subreddits`, `authors` |
 | `reddit` | `comments` | Comments → `submissions`, `subreddits`, `authors` |
 | `staging` | one per entity | Unlogged, constraint-free landing tables written by `COPY` |
@@ -102,9 +102,9 @@ Foreign keys and secondary indexes are defined in [`pipeline/constraints.py`](pi
 **Record validation** ([`pipeline/validate.py`](pipeline/validate.py)) runs on every line before it reaches the database:
 
 - The line must be well-formed JSON and decode to an object.
-- Required fields must be present: IDs, names, `created_utc`, `subreddit_id`, `link_id` and `parent_id`.
-- IDs must be base-36. Reddit's type prefixes (`t1_`, `t2_`, `t3_`, `t5_`) are accepted and normalized away.
-- Subreddit and user names must match Reddit's naming rules. Usernames are 3 to 20 characters, plus Reddit's longer `<subreddit>-ModTeam` moderator accounts.
+- Required fields must be present: IDs (except for authors, who are keyed by name), names, titles, `created_utc`, `subreddit_id`, `link_id` and `parent_id`.
+- IDs must be base-36. Reddit's type prefixes (`t1_`, `t2_`, `t3_`, `t5_`) are accepted and removed, except in `parent_id`, where the prefix shows whether a comment is a reply.
+- Subreddit and user names must match Reddit's naming rules. Usernames are 3 to 20 characters, plus Reddit's `<subreddit>-ModTeam` moderator accounts, which can be longer.
 - Timestamps must be numeric and fall between Reddit's launch (2005-06-23) and one day in the future.
 - Integers must be real integers (booleans, fractional floats and non-numeric strings are rejected) and within column range. `num_comments` and `subscribers` must be non-negative, and `controversiality` must be 0 or 1.
 - Titles cannot be blank or longer than 300 characters. Text fields have length limits.
@@ -114,8 +114,8 @@ Foreign keys and secondary indexes are defined in [`pipeline/constraints.py`](pi
 **Set-based integrity checks** ([`pipeline/load.py`](pipeline/load.py)) run during the merge:
 
 - **Deduplication**: one row per natural key. The version with the latest `retrieved_on` wins, and ties go to the version later in the file.
-- **Referential integrity**: submissions need an existing subreddit and author. Comments need an existing submission and author, and must belong to the same subreddit as their submission. Rows that fail are written to `etl.rejected_records` with reasons such as `orphan_submission` or `subreddit_mismatch`.
-- **Idempotent upserts**: an existing row is replaced only by a strictly newer retrieval. Re-running the same input changes nothing, and an older dump never overwrites newer data.
+- **Referential integrity**: submissions need an existing subreddit and, unless deleted, an existing author. Comments need an existing submission and, unless deleted, an existing author, and must belong to the same subreddit as their submission. Rows that fail are written to `etl.rejected_records` with reasons such as `orphan_submission` or `subreddit_mismatch`.
+- **Idempotent upserts**: an existing row is replaced only by a strictly newer retrieval, or by a record with a retrieval time when the row has none. Re-running the same input changes nothing, and an older dump never overwrites newer data.
 
 Validation rejects retain a sanitized excerpt of at most 4,000 characters from the input line. Integrity rejects retain the normalized staging row as JSON. Superseded duplicates contribute to counts but are not individually inserted into `etl.rejected_records`. Keep the original dumps for complete source records.
 
@@ -145,7 +145,7 @@ After loading, [`pipeline/quality.py`](pipeline/quality.py) runs these checks an
 - **Unlogged staging tables.** Raw rows land in `UNLOGGED` tables with no constraints or indexes, so writing them generates no WAL and does no per-row checking.
 - **Narrow set-based merge.** One window-function pass over narrow columns (key, source line, parent references) collects only the rows that must *not* load: superseded duplicates and rows with missing parents. The upsert then anti-joins staging against that small set, so full-width records are never sorted or copied to a temp table. There are no per-row round trips.
 - **WAL-free initial insert.** In bulk mode, an empty core table is truncated inside the merge transaction. With `wal_level=minimal`, PostgreSQL can then write the new rows without WAL and sync the file once at commit.
-- **Drop and rebuild constraints (bulk mode).** When the core tables are empty, the pipeline drops the foreign keys and secondary indexes and loads with only primary keys in place. Afterwards it rebuilds the indexes, using parallel maintenance workers, and re-adds the foreign keys. PostgreSQL validates each re-added key against every row in a single pass, so integrity is still guaranteed. Later runs switch to incremental mode automatically and keep the constraints in place.
+- **Drop and rebuild constraints (bulk mode).** When the core tables are empty (or with `--mode bulk`), the pipeline drops the foreign keys and secondary indexes and loads with only primary keys in place. Afterwards it rebuilds the indexes, using parallel maintenance workers, and re-adds the foreign keys. PostgreSQL validates each re-added key against every row in a single pass, so integrity is still guaranteed. Later runs switch to incremental mode automatically and keep the constraints in place.
 - **Session and server tuning.** The load session uses `synchronous_commit=off` and a larger `work_mem` and `maintenance_work_mem`. The server runs with `wal_level=minimal`, a larger `shared_buffers` and `max_wal_size`, and a longer checkpoint interval. `fsync` stays on.
 - **Fresh statistics.** The core tables are `ANALYZE`d after each load, so the quality checks and downstream queries get good query plans.
 
@@ -176,7 +176,7 @@ The narrow-exclusion merge described above, with WAL skipped on the initial inse
 
 ## Real-data run
 
-Every r/dataengineering post and comment that the [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) API returned, with timestamps from February 6, 2015 to November 7, 2026, was downloaded with `make fetch SUBREDDIT=dataengineering` and loaded with `make load-real`, on the same machine as the benchmark above. The [run report](results/dataengineering.md) is committed; the 1.3 GB download is not.
+Every r/dataengineering post and comment that the [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) API returned, with timestamps from February 6, 2015 to November 7, 2026, was downloaded with earlier versions of `pipeline fetch`, run directly over several sessions, and loaded with `make load-real`, on the same machine as the benchmark above. The [run report](results/dataengineering.md) is committed; the 1.39 GB download is not.
 
 | Entity | Lines read | Invalid | Duplicates | Orphaned | Loaded |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -185,13 +185,13 @@ Every r/dataengineering post and comment that the [Arctic Shift](https://github.
 | comments | 635,481 | 0 | 0 | 210 | 635,271 |
 | **total** | **708,040** | **0** | **0** | **210** | **707,830** |
 
-The load took 15.6 s end to end and produced a 353 MB database. All 13 quality checks passed: 0.03% of lines were rejected, 0.04% of replies point to a parent comment that is not in the archive, and 3.6% of comments have a deleted author. 82,383 authors were derived from the posts and comments.
+The recorded load took 15.6 s end to end and produced a 353 MB database; repeat loads of the same files on the same machine took 22 to 40 s. All 13 quality checks passed: 0.03% of lines were rejected, 0.04% of replies point to a parent comment that is not in the archive, and 3.6% of comments have a deleted author. 82,383 authors were derived from the posts and comments.
 
 What the real data showed, compared with generated data:
 
 - **Orphans come from gaps in the archive.** The 210 rejected comments belong to 22 posts that the archive does not have: its ID lookup endpoint returns none of them.
-- **A validator rule was too strict.** The first load rejected 9,203 comments, every one from the `dataengineering-ModTeam` account. Reddit creates a `<subreddit>-ModTeam` account for each community, and its name is longer than the 20-character username limit. The rule now accepts that form, and the reload rejected none.
-- **No authors file exists.** Reddit dumps contain only posts and comments, which is why `--derive-authors` exists.
+- **A validator rule was too strict.** The first load rejected 9,203 comments, every one from the `dataengineering-ModTeam` account. The names of these `<subreddit>-ModTeam` accounts can exceed the 20-character username limit. The rule now accepts that form; on reload 9,202 of those comments loaded, and one was rejected because its post is missing.
+- **There is no authors file.** The archive download contains posts and comments (plus the community record), which is why `--derive-authors` exists.
 
 The download spanned about 18 hours, much of it paused while the laptop slept. The API served 100 records per request, and it answered open-ended queries with HTTP 422 ("Timeout. Maybe slow down a bit") once the history got large. `fetch` therefore pages through 30-day windows, waits at least 10 s after a 422, and resumes from what is already on disk.
 
@@ -200,10 +200,10 @@ The download spanned about 18 hours, much of it paused while the laptop slept. T
 This snapshot is everything the API returned, not a certified complete copy of the subreddit:
 
 - **The archive has gaps.** Arctic Shift is a third-party archive. Anything it lacks, such as the 22 posts above, cannot be downloaded.
-- **The download predates the current `fetch`.** It used `limit=auto`, had no fixed end time (posts and comments were fetched hours apart, so their cut-offs differ slightly), and had no saturation check. The paging logic it used could skip records only when a single second held at least a full page (100) of them. In the data received, the busiest second holds 7 comments (3 posts) and no ID appears twice, so that skip did not happen here, provided the API returns a full page whenever more records exist. The API documents neither that nor how it orders records that share a second.
+- **The download predates the current `fetch`.** It used `limit=auto`, had no fixed end time (the newest post is from 16:30 UTC and the newest comment from 18:12 UTC on November 7, 2026), and had no saturation check. The paging logic it used could skip records only when a single second held at least a full page (100) of them. In the data received, the busiest second holds 7 comments (3 posts) and no ID appears twice, so that skip did not happen here, provided the API returns a full page whenever more records exist. The API documents neither that nor how it orders records that share a second.
 - **Counts were not reconciled against a fixed total.** The 72,558 posts and 635,481 comments exceed the API's subreddit metadata (72,065 and 633,618), but that metadata is a live, cached figure rather than a count for the same time range.
 
-Downloading again with the current `fetch` produces a snapshot with a recorded end time and a `complete` flag.
+Downloading again with the current `fetch` produces a snapshot with a recorded end time and a `complete` flag, whose limits are described [below](#using-real-reddit-dumps).
 
 ## Using real Reddit dumps
 
@@ -221,17 +221,17 @@ Accepted extensions are `.ndjson`, `.jsonl` and `.json`, optionally compressed a
 
 If an entity's file is missing, that entity is skipped with a warning. Child records that reference its rows are then rejected as orphans, so load related dumps together.
 
-Reddit dumps have no authors file. `run --derive-authors` inserts each distinct author name found in the staged posts and comments before the integrity checks, leaving `created_at` and karma `NULL`. Without the flag, named authors are rejected as orphans as before.
+Downloads from `fetch` have no authors file. `run --derive-authors` inserts each distinct author name found in the staged posts and comments before the integrity checks, leaving `author_id`, karma and `created_at` `NULL`. Without the flag, named authors are rejected as orphans as before.
 
 To get one subreddit's posts and comments, `pipeline fetch --subreddit NAME --out DIR` (or `make fetch SUBREDDIT=NAME`) downloads them from the [Arctic Shift API](https://github.com/ArthurHeitmann/arctic_shift/tree/master/api) into `subreddits.ndjson`, `submissions.ndjson` and `comments.ndjson`. It waits 1 s between requests, backs off on rate limits and timeouts, and resumes an interrupted download.
 
-`source.json` records the snapshot: `snapshot_end` (now, or `--until EPOCH`) is fixed when the download starts and kept on resume, so only records created up to that time are fetched, and a resume with a different end time is refused. When the download finishes, `complete` says whether every record in range could be fetched, and `fetch` exits with status 1 if not.
+`source.json` records the snapshot: `snapshot_end` (now, or `--until EPOCH`) is fixed when the download starts and kept on resume, so only records created up to that time are fetched, and a resume with a different end time is refused. When the download finishes, `complete` is false if any second was saturated (see below), and `fetch` then exits with status 1. It says nothing about records the archive lacks. A directory downloaded before snapshot tracking is refused.
 
 The API pages only by `created_utc`, in whole seconds, with exclusive `after`/`before` bounds. It has no secondary cursor, and records that share a second come back in a fixed order (the same for ascending and descending sorts), so there is no way to page within a second. `fetch` asks for pages of 100. If one second holds a full page of records, any beyond the first 100 cannot be reached; that second is listed under `saturated_seconds`, and the snapshot is marked incomplete rather than silently missing records. The completeness flag relies on behaviour that was observed but is not documented: results sorted by `created_utc`, and a full page returned whenever more records exist. The API is a free service intended for modest pulls; for large volumes use its monthly dumps. Archive content is user-generated and has no stated license, so check the terms that apply to your use, and keep downloaded data out of version control.
 
 ## Configuration
 
-Database settings come from `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST` and `POSTGRES_PORT`, or from a single `DATABASE_URL`. Copy `.env.example` to `.env` to override the defaults, for example to change the host port if 5432 is taken.
+Database settings come from `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST` and `POSTGRES_PORT`, or from a single `DATABASE_URL`. Copy `.env.example` to `.env` to override the defaults, for example to change the host port if 5432 is taken. Under Compose, the container always uses the `postgres` service on port 5432, and `DATABASE_URL` and the `ETL_*` variables below are not passed to it; set them with `docker compose run -e NAME=value pipeline ...`.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -249,8 +249,8 @@ Run options: `run --mode auto|bulk|incremental` (default `auto`) and `--derive-a
 make test
 ```
 
-- **Unit tests** cover every validation rule and rejection reason, reading plain, gzip and zstd files, and the generator's determinism and manifest accuracy. Fetch tests use a fake API with the probed paging behaviour to check repeated timestamps across pages, saturated seconds (flagged, never silently skipped), records the API repeats, empty windows and window edges, the snapshot end bound, resuming after a failed request or a half-written line, the snapshot end and saturation surviving a resume, and retries on 422, 429, 5xx, timeouts and dropped connections. A randomized test checks that any record not fetched lies in a second reported as saturated.
-- **Integration tests** run against a separate `reddit_test` database:
+- **Unit tests** cover the validators and the main rejection reasons, reading plain, gzip and zstd files, and the generator's determinism and manifest accuracy. Fetch tests use a fake API with the probed paging behaviour to check repeated timestamps across pages, saturated seconds (flagged, never silently skipped), records the API repeats, empty windows and window edges, the snapshot end bound, resuming after a failed request or a half-written line, the snapshot end and saturation surviving a resume, and retries on 422, 429, 503, timeouts and dropped connections. A randomized test checks that any record not fetched lies in a second reported as saturated.
+- **Integration tests** (21 of the 90 tests) run against a separate `reddit_test` database:
   - They generate a dataset with planted defects and check that the pipeline loads exactly the clean records, and that its counts of invalid lines, duplicates and orphans match the generator's manifest exactly.
   - They check that re-running the same input changes no rows and that a newer retrieval updates an existing row.
   - They cover real-dump quirks: prefixed IDs, string timestamps, NUL bytes, deleted authors, invalid UTF-8 and gzip input.
@@ -260,7 +260,7 @@ make test
 
 Unit tests also run without Docker: `pip install -r requirements-dev.txt && pytest`. The integration tests are skipped unless `TEST_DATABASE_URL` is set.
 
-A GitHub Actions workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the full suite against a PostgreSQL 16 service container. It also builds the Docker image and does a small generate-and-load smoke test.
+A GitHub Actions workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs ruff and the full suite against a PostgreSQL 16 service container. It also builds the Docker image and does a small generate-and-load smoke test.
 
 ## Reliability
 
@@ -269,7 +269,7 @@ A GitHub Actions workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml
 - **Failure boundaries.** Staging and merges commit separately for each entity. An error rolls back the active transaction, records the failure, and attempts to restore constraints; already committed entities remain. A quality failure also leaves loaded rows in place and marks the run `quality_failed`. This is a rerunnable pipeline, not one all-or-nothing transaction across the entire archive.
 - **Safe to re-run.** Upserts only apply strictly newer data, so re-running after a failure or re-loading an overlapping dump never duplicates or regresses rows.
 
-The supplied Compose settings favor a local bulk-load experiment (`wal_level=minimal`, no replication, and asynchronous commits). They are not a production durability or replication configuration. `fetch` is a one-off archive download; there is no scheduler or live Reddit API collector in this repository.
+The supplied Compose settings and load session favor a local bulk-load experiment (`wal_level=minimal`, no replication, and asynchronous commits), and Compose publishes PostgreSQL on all host interfaces with default credentials. They are not a production durability or replication configuration. `fetch` is a one-off archive download; there is no scheduler or live Reddit API collector in this repository.
 
 ## Project structure
 
@@ -278,7 +278,10 @@ reddit-data-pipeline/
 ├── docker-compose.yml        PostgreSQL 16 (load-tuned) + pipeline service
 ├── Dockerfile
 ├── Makefile
-├── .github/workflows/ci.yml  tests + Docker smoke test on every push
+├── LICENSE
+├── pyproject.toml           project metadata, pytest and ruff settings
+├── requirements*.txt         pinned dependencies
+├── .github/workflows/ci.yml  lint, tests + Docker smoke test on every push
 ├── docker/initdb/            creates the reddit_test database
 ├── sql/
 │   ├── schema.sql            staging, core and etl schemas
