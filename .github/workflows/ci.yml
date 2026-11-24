@@ -59,3 +59,13 @@ jobs:
             -e DATABASE_URL="$TEST_DATABASE_URL" \
             -v "$PWD/data:/data" \
             reddit-data-pipeline run --data-dir /data
+
+      - name: Run the README commands
+        env:
+          POSTGRES_PORT: "5433"  # the service container already uses 5432
+        run: |
+          rm -rf data
+          make generate SCALE=tiny
+          make load
+          make report
+          make test
