@@ -1,7 +1,7 @@
 # r/dataengineering load report
 
 Source: Arctic Shift API (https://arctic-shift.photon-reddit.com): every r/dataengineering post and comment it returned, fetched 2026-11-07. This download predates the snapshot end and completeness check in `fetch`; see GUIDE.md, "How complete is it?".
-Command: make fetch SUBREDDIT=dataengineering && make load-real
+Download: earlier versions of `pipeline fetch`, run directly over several sessions. Load: `make load-real`.
 Machine: Apple Silicon Mac, Docker Desktop limited to 10 CPUs and 8 GB of memory, PostgreSQL 16.
 
 ```
