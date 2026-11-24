@@ -79,6 +79,8 @@ Other commands:
 
 The CLI can also be called directly: `docker compose run --rm pipeline --help`.
 
+The pipeline container writes to `./data`, so the `make` targets create that directory and run the container as the calling user. To call Compose directly on Linux, create `./data` yourself and pass your IDs, for example `HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose run --rm pipeline generate --out /data`. Without them the container runs as 1000:1000.
+
 ## Data model
 
 | Schema | Table | Purpose |
@@ -172,7 +174,9 @@ Each count matches the generator's manifest exactly, and all 13 quality checks p
 | Quality checks | 61 s |
 | **End to end** | **345 s (≈55K lines/s)** |
 
-The narrow-exclusion merge described above, with WAL skipped on the initial insert, cut end-to-end time from 584 s to 345 s. The comments merge alone went from 267 s to 102 s. The loaded database is about 5.9 GB.
+The narrow-exclusion merge described above, with WAL skipped on the initial insert, cut end-to-end time from 584 s to 345 s. The comments merge alone went from 267 s to 102 s. The loaded database is about 5.9 GB. The 584 s version was not committed, so that comparison cannot be rerun from this repository.
+
+The counts reproduce; the times vary. Two runs of the current design took 345 s and 349 s. A later run on the same Mac took 837 s, on battery with other containers and downloads running, with identical counts and all 13 checks passing.
 
 ## Real-data run
 
@@ -260,7 +264,7 @@ make test
 
 Unit tests also run without Docker: `pip install -r requirements-dev.txt && pytest`. The integration tests are skipped unless `TEST_DATABASE_URL` is set.
 
-A GitHub Actions workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs ruff and the full suite against a PostgreSQL 16 service container. It also builds the Docker image and does a small generate-and-load smoke test.
+A GitHub Actions workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs ruff and the full suite against a PostgreSQL 16 service container. It also builds the Docker image, does a small generate-and-load smoke test, and runs `make generate`, `make load`, `make report` and `make test` on a fresh Linux checkout.
 
 ## Reliability
 
