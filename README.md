@@ -15,7 +15,7 @@ make report
 make test
 ```
 
-The first command creates sample data with deliberately injected defects. `make load` starts PostgreSQL, loads `./data`, and reports accepted records, rejections, and quality checks. Error-level quality failures produce a nonzero exit status. `make report` reprints the latest run, and `make test` runs the test suite in Docker.
+The first command creates sample data with deliberately injected defects. `make load` starts PostgreSQL, loads `./data`, and reports accepted records, rejections, and quality checks. Error-level quality failures produce a nonzero exit status. `make report` reprints the latest run, and `make test` runs the test suite in Docker. The `make` targets run the pipeline container as your own user, so the files in `./data` belong to you; calling `docker compose run` directly on Linux needs `HOST_UID` and `HOST_GID` set (see the [guide](GUIDE.md#quick-start)).
 
 To change the database credentials or host port, copy `.env.example` to `.env` before the first start. The `ETL_*` settings in the [guide](GUIDE.md#configuration) are read by the CLI, but Compose does not pass them to the container; set them with `docker compose run -e`.
 
@@ -42,11 +42,11 @@ Python reads the archive line by line, validates each record, and sends valid on
 
 The merge uses a small set of columns to identify duplicates and rejected rows, rather than sorting complete records. Loads into an empty database also drop the foreign keys and secondary indexes first, then rebuild them after loading, which validates every foreign key. The [guide](GUIDE.md) explains the bulk-load settings and reported benchmark.
 
-The 90 tests cover validation, the data generator, repeat loads, newer-record updates, compressed input, derived authors, concurrent runs, loads interrupted at six phase boundaries, and download paging, retries and resume against a fake API. Twenty-one of them need PostgreSQL and are skipped without `TEST_DATABASE_URL`. GitHub Actions runs ruff, all 90 tests, a Docker build, and a small load. Thirteen quality checks inspect the loaded database.
+The 90 tests cover validation, the data generator, repeat loads, newer-record updates, compressed input, derived authors, concurrent runs, loads interrupted at six phase boundaries, and download paging, retries and resume against a fake API. Twenty-one of them need PostgreSQL and are skipped without `TEST_DATABASE_URL`. GitHub Actions runs ruff, all 90 tests, a Docker build, a small load, and the commands above on Linux. Thirteen quality checks inspect the loaded database.
 
 ## Boundaries
 
-The published 18.9-million-line benchmark uses generated data. `make generate SCALE=full` reproduces the input; the raw timing log is not committed. Treat it as a reported development measurement, not a production throughput guarantee. The real-data run above is about 27 times smaller.
+The published 18.9-million-line benchmark uses generated data. `make generate SCALE=full` reproduces the input, and reloading it reproduces every count. The timing does not reproduce reliably: the reported 345 seconds was 349 in a second run, but a later run on the same machine, busy and on battery, took 837. The raw timing logs are not committed. Treat it as a reported development measurement, not a production throughput guarantee. The real-data run above is about 27 times smaller.
 
 Each record type commits separately, so a failed comment load can leave communities, authors and posts already loaded. The Compose configuration favors local bulk loading, not production durability or replication, and it publishes PostgreSQL on all host interfaces with default credentials. Rejected records are kept in the database as excerpts or normalized copies, which can include usernames and text. `make fetch` downloads one subreddit's archive from the Arctic Shift API; there is no scheduler or live Reddit collector.
 
