@@ -3,6 +3,10 @@ SUBREDDIT ?= dataengineering
 COMPOSE := docker compose
 RUN := $(COMPOSE) run --rm pipeline
 
+# The pipeline container runs as the calling user so it can write to ./data on Linux.
+export HOST_UID := $(shell id -u)
+export HOST_GID := $(shell id -g)
+
 .PHONY: help build up generate fetch load load-real report report-real check test pipeline psql down clean
 
 help:
@@ -18,37 +22,41 @@ help:
 	@echo "make psql                 open a psql shell"
 	@echo "make down / make clean    stop services / also delete the database volume and ./data"
 
+# Docker would create a missing bind mount as root.
+data:
+	mkdir -p data
+
 build:
 	$(COMPOSE) build pipeline
 
 up:
 	$(COMPOSE) up -d --wait postgres
 
-generate: build
+generate: build data
 	$(RUN) generate --scale $(SCALE) --out /data
 
-fetch: build
+fetch: build data
 	$(RUN) fetch --subreddit $(SUBREDDIT) --out /data/$(SUBREDDIT)
 
-load: up build
+load: up build data
 	$(RUN) run --data-dir /data
 
 # Real data gets its own database so it never mixes with generated benchmark rows.
-load-real: up build
+load-real: up build data
 	echo "SELECT 'CREATE DATABASE reddit_real' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'reddit_real')\gexec" \
 		| $(COMPOSE) exec -T postgres psql -q -U $${POSTGRES_USER:-reddit} -d postgres
 	$(COMPOSE) run --rm -e POSTGRES_DB=reddit_real pipeline run --data-dir /data/$(SUBREDDIT) --derive-authors
 
-report-real:
+report-real: data
 	$(COMPOSE) run --rm -e POSTGRES_DB=reddit_real pipeline report
 
-report:
+report: data
 	$(RUN) report
 
-check:
+check: data
 	$(RUN) check
 
-test: up build
+test: up build data
 	$(COMPOSE) run --rm --entrypoint pytest pipeline -q -p no:cacheprovider
 
 pipeline: generate load
